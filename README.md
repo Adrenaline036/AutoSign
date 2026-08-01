@@ -1,5 +1,7 @@
 # AutoSign
 
+[![CI](https://github.com/Adrenaline036/AutoSign/actions/workflows/ci.yml/badge.svg)](https://github.com/Adrenaline036/AutoSign/actions/workflows/ci.yml)
+
 AutoSign 是一个面向 NAS 与 Docker 的自托管自动签到平台。它把账户、加密登录状态、定时计划、执行记录、消息通知和备份放在统一的 Web GUI 中，同时将每个网站的登录与签到逻辑封装为独立插件，方便继续扩展新站点。
 
 > [!IMPORTANT]
@@ -49,8 +51,8 @@ flowchart LR
 ### Windows PowerShell
 
 ```powershell
-git clone https://github.com/<你的用户名>/<仓库名>.git
-Set-Location <仓库名>
+git clone https://github.com/Adrenaline036/AutoSign.git
+Set-Location AutoSign
 
 py -m venv .venv
 .\.venv\Scripts\python.exe -m pip install -e .
@@ -63,8 +65,8 @@ docker compose up -d --build
 ### Linux / NAS SSH
 
 ```bash
-git clone https://github.com/<你的用户名>/<仓库名>.git
-cd <仓库名>
+git clone https://github.com/Adrenaline036/AutoSign.git
+cd AutoSign
 
 python3 -m venv .venv
 .venv/bin/pip install -e .
