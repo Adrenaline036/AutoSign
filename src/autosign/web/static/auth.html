@@ -1,0 +1,144 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AutoSign 安全登录</title>
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, "Microsoft YaHei", system-ui, sans-serif;
+        background: #09111f;
+        color: #e8eef8;
+      }
+      * { box-sizing: border-box; }
+      [hidden] { display: none !important; }
+      body {
+        min-height: 100vh; margin: 0; display: grid; place-items: center; padding: 24px;
+        background: radial-gradient(circle at 15% 0%, #1a2d52 0, transparent 36rem), #09111f;
+      }
+      main {
+        width: min(460px, 100%); padding: 30px; border: 1px solid #2b4265;
+        border-radius: 22px; background: #101c30; box-shadow: 0 28px 90px #0009;
+      }
+      .status { color: #6ee7a5; font-size: .9rem; }
+      h1 { margin: 10px 0 8px; font-size: 2.35rem; letter-spacing: -.04em; }
+      p { color: #9bacc5; line-height: 1.65; }
+      form { display: grid; gap: 16px; margin-top: 24px; }
+      label { display: grid; gap: 8px; color: #c2cfe1; }
+      input {
+        width: 100%; padding: 12px 13px; border: 1px solid #385070; border-radius: 11px;
+        background: #091425; color: #f2f6fc; font: inherit;
+      }
+      button {
+        padding: 12px 14px; border: 0; border-radius: 11px; background: #6d7cff;
+        color: white; font: inherit; font-weight: 700; cursor: pointer;
+      }
+      button:disabled { cursor: wait; opacity: .65; }
+      .error {
+        display: none; padding: 11px 13px; border: 1px solid #8f4452; border-radius: 10px;
+        background: #4a1f28; color: #ffd7dc;
+      }
+      .note { font-size: .88rem; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <div class="status">● AutoSign 安全访问</div>
+      <h1 id="title">正在检查…</h1>
+      <p id="description">正在读取管理员账户状态。</p>
+      <form id="auth-form" hidden>
+        <label>管理员密码
+          <input id="password" type="password" minlength="12" maxlength="200"
+            autocomplete="current-password" required>
+        </label>
+        <label id="confirmation-row" hidden>再次输入密码
+          <input id="password-confirmation" type="password" minlength="12" maxlength="200"
+            autocomplete="new-password">
+        </label>
+        <div id="error" class="error" role="alert"></div>
+        <button id="submit" type="submit">继续</button>
+      </form>
+      <p class="note">密码不会以明文保存。登录状态使用 HttpOnly Cookie，网站 Cookie
+        仍保存在账户级加密秘密库中。</p>
+    </main>
+    <script>
+      const form = document.querySelector("#auth-form");
+      const password = document.querySelector("#password");
+      const confirmation = document.querySelector("#password-confirmation");
+      const confirmationRow = document.querySelector("#confirmation-row");
+      const title = document.querySelector("#title");
+      const description = document.querySelector("#description");
+      const submit = document.querySelector("#submit");
+      const errorBox = document.querySelector("#error");
+      let setupMode = false;
+
+      function showError(message) {
+        errorBox.textContent = message;
+        errorBox.style.display = "block";
+      }
+
+      async function request(path, body) {
+        const response = await fetch(path, {
+          method: "POST",
+          headers: {"Content-Type": "application/json"},
+          body: JSON.stringify(body)
+        });
+        if (!response.ok) {
+          const payload = await response.json().catch(() => ({}));
+          throw new Error(payload.detail || `请求失败（${response.status}）`);
+        }
+      }
+
+      fetch("/api/v1/auth/status", {cache: "no-store"})
+        .then((response) => {
+          if (!response.ok) throw new Error(`认证状态请求失败（${response.status}）`);
+          return response.json();
+        })
+        .then((status) => {
+          if (status.authenticated) {
+            window.location.replace(`/?authenticated=${Date.now()}`);
+            return;
+          }
+          setupMode = !status.configured;
+          title.textContent = setupMode ? "设置管理员密码" : "登录 AutoSign";
+          description.textContent = setupMode
+            ? "首次使用需要创建管理员密码。请至少输入 12 个字符，并妥善保管。"
+            : "请输入管理员密码后继续进入管理页面。";
+          confirmationRow.hidden = !setupMode;
+          confirmation.required = setupMode;
+          password.autocomplete = setupMode ? "new-password" : "current-password";
+          submit.textContent = setupMode ? "创建密码并进入" : "登录";
+          form.hidden = false;
+          password.focus();
+        })
+        .catch((error) => {
+          title.textContent = "无法检查登录状态";
+          description.textContent = "页面不会自动刷新，请检查服务后手动重试。";
+          showError(error.message || "无法读取认证状态，请确认服务正在运行。");
+        });
+
+      form.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        errorBox.style.display = "none";
+        if (setupMode && password.value !== confirmation.value) {
+          showError("两次输入的密码不一致。");
+          return;
+        }
+        submit.disabled = true;
+        try {
+          await request(
+            setupMode ? "/api/v1/auth/setup" : "/api/v1/auth/login",
+            {password: password.value}
+          );
+          window.location.replace(`/?authenticated=${Date.now()}`);
+        } catch (error) {
+          showError(error.message);
+          password.select();
+        } finally {
+          submit.disabled = false;
+        }
+      });
+    </script>
+  </body>
+</html>

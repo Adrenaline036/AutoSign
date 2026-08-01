@@ -1,0 +1,68 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AutoSign Demo 登录</title>
+    <style>
+      :root { font-family: "Microsoft YaHei", system-ui, sans-serif; color: #172238; }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; display: grid; place-items: center;
+        background: linear-gradient(135deg, #edf3ff, #dce9ff); }
+      main { width: min(430px, calc(100% - 40px)); padding: 34px; border-radius: 22px;
+        background: white; box-shadow: 0 24px 70px #47618c40; }
+      h1 { margin: 0 0 8px; }
+      p { color: #60708d; line-height: 1.6; }
+      form { display: grid; gap: 16px; margin-top: 24px; }
+      label { display: grid; gap: 7px; font-weight: 700; }
+      input { padding: 12px; border: 1px solid #aab8cf; border-radius: 9px; font: inherit; }
+      button { padding: 12px; border: 0; border-radius: 9px; background: #536dfe;
+        color: white; font: inherit; font-weight: 700; cursor: pointer; }
+      .success { color: #13734c; font-weight: 700; }
+    </style>
+  </head>
+  <body>
+    <main>
+      <h1>Demo 交互登录</h1>
+      <p>此页面只用于测试 AutoSign 浏览器会话，不会把用户名或密码发送到外部网站。</p>
+      <form id="login-form">
+        <label>测试用户名
+          <input id="username" autocomplete="username" autofocus required>
+        </label>
+        <label>测试密码
+          <input id="password" type="password" autocomplete="current-password" required>
+        </label>
+        <button type="submit">登录并建立 Demo 会话</button>
+      </form>
+      <section id="result" hidden>
+        <p id="demo-authenticated" class="success">Demo 会话已登录</p>
+        <p id="welcome"></p>
+      </section>
+    </main>
+    <script>
+      const form = document.querySelector("#login-form");
+      const result = document.querySelector("#result");
+      const welcome = document.querySelector("#welcome");
+
+      function showSignedIn(username) {
+        form.hidden = true;
+        result.hidden = false;
+        welcome.textContent = `欢迎，${username}`;
+        document.title = "Demo 已登录";
+      }
+
+      const existingUser = localStorage.getItem("autosign_demo_user");
+      if (existingUser && document.cookie.includes("demo_session=active")) {
+        showSignedIn(existingUser);
+      }
+
+      form.addEventListener("submit", (event) => {
+        event.preventDefault();
+        const username = document.querySelector("#username").value;
+        localStorage.setItem("autosign_demo_user", username);
+        document.cookie = "demo_session=active; Path=/; SameSite=Lax";
+        showSignedIn(username);
+      });
+    </script>
+  </body>
+</html>

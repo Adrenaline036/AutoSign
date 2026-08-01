@@ -1,0 +1,2 @@
+"""Site-independent AutoSign core."""
+

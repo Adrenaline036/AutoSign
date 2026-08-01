@@ -1,0 +1,1748 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AutoSign</title>
+    <link rel="icon" href="data:,">
+    <style>
+      :root {
+        color-scheme: dark;
+        font-family: Inter, "Microsoft YaHei", system-ui, sans-serif;
+        background: #09111f;
+        color: #e8eef8;
+      }
+      * { box-sizing: border-box; }
+      body { margin: 0; min-height: 100vh; background:
+        radial-gradient(circle at 10% 0%, #18294b 0, transparent 32rem), #09111f; }
+      main { width: min(1100px, calc(100% - 32px)); margin: 0 auto; padding: 52px 0 80px; }
+      header { margin-bottom: 32px; }
+      .header-row { display: flex; justify-content: space-between; align-items: start; gap: 20px; }
+      .header-actions { display: flex; gap: 10px; flex-wrap: wrap; justify-content: flex-end; }
+      h1 { font-size: clamp(2.5rem, 7vw, 5rem); margin: 6px 0; letter-spacing: -0.06em; }
+      h2 { margin: 0 0 16px; font-size: 1.35rem; }
+      h3 { margin: 0 0 8px; }
+      p { line-height: 1.65; }
+      .lead, .muted { color: #96a7c3; }
+      .status { display: inline-flex; align-items: center; gap: 8px; color: #6ee7a5; }
+      .dot { width: 9px; height: 9px; border-radius: 50%; background: currentColor;
+        box-shadow: 0 0 16px currentColor; }
+      .panel { background: color-mix(in srgb, #111d32 94%, transparent);
+        border: 1px solid #223453; border-radius: 20px; padding: 24px; margin-top: 20px; }
+      .grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(260px, 1fr));
+        gap: 16px; }
+      .account-grid { grid-template-columns: 1fr; margin-top: 16px; }
+      .channel-columns { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px; }
+      .channel-column { min-width: 0; padding: 14px; border: 1px solid #263957;
+        border-radius: 16px; background: #0b1627; }
+      .channel-column > h3 { margin-bottom: 14px; color: #c9d8ec; }
+      .channel-list { display: grid; gap: 12px; }
+      .card { position: relative; background: #0e192b; border: 1px solid #263957;
+        border-radius: 16px; padding: 18px; }
+      .account-card { min-height: 190px; padding: 20px; }
+      .account-card > h3 { padding-right: 56px; }
+      .channel-card { min-height: 150px; }
+      .card.disabled { opacity: 0.62; }
+      .meta { color: #8495b1; font-size: 0.88rem; }
+      .row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
+      label { display: grid; gap: 7px; color: #b9c7dc; font-size: 0.92rem; }
+      input, select {
+        min-width: 210px; padding: 11px 12px; border: 1px solid #304564; border-radius: 10px;
+        background: #0a1425; color: #edf3fb; font: inherit;
+      }
+      button {
+        border: 0; border-radius: 10px; padding: 10px 14px;
+        background: linear-gradient(135deg, #7180ff, #5968dc);
+        color: white; font-weight: 750; cursor: pointer;
+        box-shadow: 0 5px 14px #0206174d;
+        transition: transform .14s ease, box-shadow .14s ease, filter .14s ease;
+      }
+      button:hover { filter: brightness(1.1); transform: translateY(-1px);
+        box-shadow: 0 8px 20px #02061766; }
+      button:active { transform: translateY(0); }
+      button.secondary { background: #2a405f; }
+      button.secondary:hover { background: #365173; }
+      button.login-action {
+        padding-inline: 18px;
+        background: linear-gradient(135deg, #ffb11b, #eb6208);
+        color: #fffaf0;
+        box-shadow: 0 0 0 1px #ffc14d80, 0 8px 22px #d95f124d;
+        text-shadow: 0 1px 2px #71300080;
+      }
+      button.login-action:hover { filter: brightness(1.08) saturate(1.08);
+        box-shadow: 0 0 0 1px #ffd071aa, 0 10px 26px #e86b1859; }
+      button.execute-action { background: linear-gradient(135deg, #667cf3, #4358c8); }
+      button.schedule-action { background: linear-gradient(135deg, #8b68da, #6653ae); }
+      button.push-action { background: linear-gradient(135deg, #20a2a0, #187681); }
+      button.success-action { background: linear-gradient(135deg, #20a46f, #147451); }
+      button.danger { background: linear-gradient(135deg, #ba4a59, #8f3342); }
+      button:disabled { cursor: wait; opacity: 0.65; transform: none; filter: none; }
+      .actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 16px;
+        align-items: center; }
+      .account-actions, .channel-actions { width: 100%; }
+      .inline-delete { display: grid; place-items: center; width: 42px; height: 42px;
+        margin-left: auto; padding: 0; background: #57232d; color: #ffb5bd; }
+      .inline-delete:hover { background: #74303c; }
+      .badge { display: inline-block; padding: 3px 8px; border-radius: 999px;
+        background: #1c304d; color: #b9d0f1; font-size: 0.78rem; }
+      .badge.ok { background: #173a30; color: #71e4ad; border: 1px solid #285f4f; }
+      .badge.missing { background: #4a1f28; color: #ffabb5; border: 1px solid #74323f; }
+      .status-badges { display: flex; gap: 8px; flex-wrap: wrap; margin: 12px 0 4px; }
+      .status-badges .badge { padding: 5px 10px; }
+      .corner-button { position: absolute; display: grid; place-items: center; width: 42px;
+        height: 42px; padding: 0; border-radius: 12px; }
+      .corner-button svg, .inline-delete svg, .button-icon svg {
+        width: 19px; height: 19px; fill: none;
+        stroke: currentColor; stroke-width: 2; stroke-linecap: round;
+        stroke-linejoin: round; }
+      .power-button { top: 16px; right: 16px; background: #243753; color: #a9b8cf; }
+      .power-button.enabled { background: #173a30; color: #71e4ad; }
+      .button-icon { display: inline-flex; align-items: center; gap: 7px; }
+      .channel-type { margin-bottom: 10px; }
+      .channel-accounts { margin-top: 12px; color: #91a4c1; font-size: .88rem; }
+      .channel-choice { display: grid; grid-template-columns: auto 1fr; gap: 12px;
+        align-items: center; padding: 14px; border: 1px solid #304564; border-radius: 12px;
+        background: #0a1425; cursor: pointer; }
+      .channel-choice input { width: 18px; height: 18px; min-width: 0; }
+      .channel-choice-list { display: grid; gap: 10px; }
+      .channel-form-section { display: grid; gap: 16px; padding: 14px;
+        border: 1px solid #293e5e; border-radius: 12px; background: #0b1627; }
+      .channel-form-section[hidden] { display: none; }
+      .delete-copy { margin: 0; }
+      .delete-confirm-wrap { margin-top: -8px; }
+      .schedule-meta { display: flex; flex-wrap: wrap; gap: 8px 32px; min-height: 24px;
+        margin-top: 12px; color: #a8b8d1; font-size: 0.9rem; }
+      .section-heading { display: flex; justify-content: space-between; align-items: center;
+        gap: 16px; margin-bottom: 16px; }
+      .section-heading h2 { margin: 0; }
+      .history-list { display: grid; gap: 10px; }
+      .history-item { display: grid; grid-template-columns: minmax(150px, .8fr) minmax(130px, .7fr)
+        minmax(220px, 2fr) auto; gap: 12px; align-items: center; padding: 13px 14px;
+        border: 1px solid #263957; border-radius: 12px; background: #0e192b; }
+      .history-message { overflow: hidden; color: #b8c6da; text-overflow: ellipsis;
+        white-space: nowrap; }
+      .backup-summary { display: grid; gap: 12px; margin-top: 8px; }
+      .backup-summary-row { display: grid; gap: 12px; }
+      .backup-summary-row.primary { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+      .backup-summary-row.secondary { grid-template-columns: repeat(3, minmax(0, 1fr)); }
+      .backup-summary-item { min-width: 0; padding: 14px 16px; border: 1px solid #263957;
+        border-radius: 12px; background: #0b1627; }
+      .backup-value { margin-top: 5px; color: #dbe7f7; overflow-wrap: anywhere; }
+      .backup-error { color: #ffabb5; }
+      .backup-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 16px; }
+      .backup-settings-grid label:last-child { grid-column: 1 / -1; }
+      .badge.success, .badge.already_signed { background: #173a30; color: #71e4ad; }
+      .badge.failed { background: #4a1f28; color: #ffd7dc; }
+      .badge.interaction_required { background: #493819; color: #ffd88b; }
+      #execution-detail-json { max-height: 280px; overflow: auto; padding: 12px;
+        border: 1px solid #2a4060; border-radius: 10px; background: #091425; }
+      #notice { position: fixed; right: 18px; bottom: 18px; max-width: 420px; padding: 14px 18px;
+        border-radius: 12px; background: #172640; border: 1px solid #38527a;
+        box-shadow: 0 16px 48px #0008; display: none; }
+      #notice.error { background: #4a1f28; border-color: #8f4452; }
+      pre { white-space: pre-wrap; color: #b9c7dd; min-height: 24px; }
+      dialog {
+        width: min(520px, calc(100% - 32px)); padding: 0; border: 1px solid #31496d;
+        border-radius: 20px; background: #101c30; color: #e8eef8;
+        box-shadow: 0 28px 90px #000c;
+      }
+      dialog::backdrop { background: #020713c7; backdrop-filter: blur(5px); }
+      .modal-header { display: flex; justify-content: space-between; align-items: start;
+        gap: 20px; padding: 22px 24px 8px; }
+      .modal-header h2 { margin-bottom: 5px; }
+      .modal-header p { margin: 0; }
+      .icon-button { margin: -6px -8px 0 0; padding: 7px 11px; border-radius: 9px;
+        background: transparent; color: #9bacc5; font-size: 1.25rem; }
+      .icon-button:hover { background: #20324d; color: white; }
+      .modal-body { display: grid; gap: 16px; padding: 16px 24px 24px; }
+      .modal-body label { width: 100%; }
+      .modal-body input:not([type="checkbox"]) { width: 100%; min-width: 0; }
+      .toggle { display: flex !important; grid-template-columns: auto 1fr; align-items: center;
+        gap: 9px !important; cursor: pointer; }
+      .toggle input { width: 16px; height: 16px; min-width: 0; margin: 0; }
+      .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
+      .confirmation-name { display: block; margin-top: 7px; color: #f0c2ca;
+        font-weight: 700; overflow-wrap: anywhere; }
+      .browser-dialog { width: min(1180px, calc(100% - 24px)); max-width: none; }
+      .browser-modal-body { padding-top: 10px; }
+      .browser-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
+        padding: 10px 12px; border: 1px solid #2a4060; border-radius: 12px;
+        background: #0a1425; }
+      .browser-toolbar .browser-location { flex: 1; min-width: 260px; overflow: hidden;
+        color: #91a6c5; text-overflow: ellipsis; white-space: nowrap; font-size: 0.88rem; }
+      .browser-stage { position: relative; width: 100%; aspect-ratio: 16 / 10;
+        overflow: hidden; border: 2px solid #31496d; border-radius: 12px; background: #050a13;
+        outline: none; }
+      .browser-stage:focus-within { border-color: #7c8aff; box-shadow: 0 0 0 3px #6d7cff33; }
+      #browser-screenshot { display: block; width: 100%; height: 100%; object-fit: contain;
+        cursor: default; user-select: none; }
+      .browser-loading { position: absolute; inset: 0; display: grid; place-items: center;
+        color: #90a4c3; pointer-events: none; }
+      .browser-loading[hidden] { display: none; }
+      .browser-keyboard-capture {
+        position: absolute; width: 1px; height: 1px; left: 50%; bottom: 0;
+        opacity: 0; pointer-events: none; padding: 0; border: 0; min-width: 0;
+      }
+      .browser-focus-hint {
+        position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
+        padding: 8px 12px; border: 1px solid #435c82; border-radius: 999px;
+        background: #081426e8; color: #c8d6ea; font-size: .85rem; pointer-events: none;
+        transition: opacity .15s;
+      }
+      .browser-stage:focus-within .browser-focus-hint { opacity: 0; }
+      .browser-help { margin: 0; font-size: 0.88rem; }
+      @media (max-width: 760px) {
+        .channel-columns { grid-template-columns: 1fr; }
+        .history-item { grid-template-columns: 1fr auto; }
+        .history-message { grid-column: 1 / -1; white-space: normal; }
+        .backup-summary-row.secondary { grid-template-columns: 1fr; }
+      }
+      @media (max-width: 600px) {
+        .header-row, .section-heading { align-items: stretch; flex-direction: column; }
+        .header-actions { justify-content: flex-start; }
+        input, select { min-width: 100%; }
+        .row > * { width: 100%; }
+        .backup-summary-row.primary, .backup-settings-grid { grid-template-columns: 1fr; }
+        .backup-settings-grid label:last-child { grid-column: auto; }
+      }
+    </style>
+  </head>
+  <body>
+    <main>
+      <header class="header-row">
+        <div>
+          <div class="status"><span class="dot"></span>核心平台运行中</div>
+          <h1>AutoSign</h1>
+        </div>
+        <div class="header-actions">
+          <button id="demo-test" class="secondary" type="button">Demo 签到测试</button>
+          <button id="logout" class="secondary" type="button">退出管理页面</button>
+        </div>
+      </header>
+
+      <section class="panel">
+        <h2>账户</h2>
+        <form id="account-form" class="row">
+          <label>插件
+            <select id="plugin-select" required></select>
+          </label>
+          <label>账户名称
+            <input id="account-label" maxlength="100" placeholder="例如：我的 ACGRip" required>
+          </label>
+          <button type="submit">创建账户</button>
+        </form>
+        <div id="accounts" class="grid account-grid"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <h2>最近签到记录</h2>
+          <div class="header-actions">
+            <button id="history-refresh" class="success-action button-icon" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66"/><path d="M20 4v7h-7"/></svg>
+              刷新
+            </button>
+            <button id="history-clear" class="danger button-icon" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
+              清空
+            </button>
+          </div>
+        </div>
+        <div id="execution-history" class="history-list"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>消息推送渠道</h2>
+            <p class="muted">渠道只需创建一次，再分配给一个或多个账户。敏感配置加密保存。</p>
+          </div>
+          <button id="channel-create" class="push-action" type="button">创建推送渠道</button>
+        </div>
+        <div id="notification-channels" class="channel-columns"></div>
+      </section>
+
+      <section class="panel">
+        <div class="section-heading">
+          <div>
+            <h2>系统备份</h2>
+            <div id="backup-badges" class="status-badges"></div>
+          </div>
+          <div class="header-actions">
+            <button id="backup-settings" class="secondary button-icon" type="button">
+              <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.7 1.7 0 0 0 .34 1.88l.06.06-2.83 2.83-.06-.06a1.7 1.7 0 0 0-1.88-.34 1.7 1.7 0 0 0-1.03 1.56V21h-4v-.08A1.7 1.7 0 0 0 8.97 19.4a1.7 1.7 0 0 0-1.88.34l-.06.06-2.83-2.83.06-.06A1.7 1.7 0 0 0 4.6 15a1.7 1.7 0 0 0-1.52-1.03H3v-4h.08A1.7 1.7 0 0 0 4.6 8.94a1.7 1.7 0 0 0-.34-1.88L4.2 7l2.83-2.83.06.06a1.7 1.7 0 0 0 1.88.34A1.7 1.7 0 0 0 10 3.05V3h4v.08a1.7 1.7 0 0 0 1.03 1.52 1.7 1.7 0 0 0 1.88-.34l.06-.06L19.8 7l-.06.06a1.7 1.7 0 0 0-.34 1.88A1.7 1.7 0 0 0 20.92 10H21v4h-.08A1.7 1.7 0 0 0 19.4 15Z"/></svg>
+              设置
+            </button>
+            <button id="backup-check" class="secondary" type="button">校验最近备份</button>
+            <button id="backup-run" class="success-action" type="button">立即备份</button>
+          </div>
+        </div>
+        <div id="backup-summary" class="backup-summary"></div>
+      </section>
+    </main>
+    <aside id="notice" role="status" aria-live="polite"></aside>
+
+    <dialog id="backup-settings-dialog" aria-labelledby="backup-settings-title">
+      <form id="backup-settings-form">
+        <div class="modal-header">
+          <div>
+            <h2 id="backup-settings-title">系统备份设置</h2>
+            <p class="muted">设置保存后立即生效，不需要重启容器。</p>
+          </div>
+          <button id="backup-settings-close" class="icon-button" type="button"
+            aria-label="关闭系统备份设置">×</button>
+        </div>
+        <div class="modal-body">
+          <label class="toggle">
+            <input id="backup-settings-enabled" type="checkbox">
+            启用每日自动备份
+          </label>
+          <div class="backup-settings-grid">
+            <label>每日执行时间
+              <input id="backup-settings-time" type="time" required>
+            </label>
+            <label>时区
+              <select id="backup-settings-timezone" required>
+                <option value="Asia/Shanghai">Asia/Shanghai（中国）</option>
+                <option value="UTC">UTC</option>
+                <option value="Asia/Tokyo">Asia/Tokyo（日本）</option>
+              </select>
+            </label>
+            <label>自动备份保留份数
+              <input id="backup-settings-retention" type="number" min="1" max="365" required>
+            </label>
+            <label>备份密码
+              <input id="backup-settings-password" type="password" minlength="12" maxlength="200"
+                autocomplete="new-password" placeholder="留空则继续使用当前密码">
+            </label>
+          </div>
+          <p id="backup-password-hint" class="muted"></p>
+          <div class="modal-actions">
+            <button id="backup-settings-cancel" class="secondary" type="button">取消</button>
+            <button id="backup-settings-submit" type="submit">保存设置</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="delete-account-dialog" aria-labelledby="delete-dialog-title">
+      <form id="delete-account-form">
+        <div class="modal-header">
+          <div>
+            <h2 id="delete-dialog-title">确认删除账户</h2>
+            <p class="muted">此操作会删除账户及其关联秘密、计划和执行记录。</p>
+          </div>
+          <button id="delete-dialog-close" class="icon-button" type="button"
+            aria-label="关闭删除确认弹窗">×</button>
+        </div>
+        <div class="modal-body delete-confirm-wrap">
+          <p class="muted delete-copy">请输入下面的完整账户名称以确认：
+            <span id="delete-account-name" class="confirmation-name"></span>
+          </p>
+          <input id="delete-confirmation" maxlength="100" autocomplete="off"
+            aria-label="输入完整账户名称" placeholder="输入完整账户名称" required>
+          <div class="modal-actions">
+            <button id="delete-dialog-cancel" class="secondary" type="button">取消</button>
+            <button id="delete-dialog-submit" class="danger" type="submit">确认删除</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="schedule-dialog" aria-labelledby="schedule-dialog-title">
+      <form id="schedule-form">
+        <div class="modal-header">
+          <div>
+            <h2 id="schedule-dialog-title">每日自动签到</h2>
+            <p id="schedule-dialog-account" class="muted"></p>
+          </div>
+          <button id="schedule-dialog-close" class="icon-button" type="button"
+            aria-label="关闭计划弹窗">×</button>
+        </div>
+        <div class="modal-body">
+          <label class="toggle">
+            <input id="schedule-enabled" type="checkbox" checked>
+            <span>启用自动签到</span>
+          </label>
+          <label>每日基础时间
+            <input id="schedule-time" type="time" value="08:00" required>
+          </label>
+          <label>时区
+            <select id="schedule-timezone">
+              <option value="Asia/Shanghai">中国标准时间（Asia/Shanghai）</option>
+              <option value="UTC">协调世界时（UTC）</option>
+            </select>
+          </label>
+          <label>随机延迟（分钟）
+            <input id="schedule-jitter" type="number" min="0" max="180" value="15" required>
+          </label>
+          <label>失败重试次数
+            <input id="schedule-retries" type="number" min="0" max="5" value="2" required>
+          </label>
+          <label>重试间隔（分钟）
+            <input id="schedule-retry-delay" type="number" min="1" max="120" value="5" required>
+          </label>
+          <p class="muted">实际执行时间为基础时间加 0 至随机延迟分钟。只有执行失败才会
+            重试；需要重新登录时不会反复尝试。</p>
+          <div class="modal-actions">
+            <button id="schedule-delete" class="danger" type="button">删除计划</button>
+            <button id="schedule-cancel" class="secondary" type="button">取消</button>
+            <button id="schedule-save" type="submit">保存计划</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="channel-dialog" aria-labelledby="channel-dialog-title">
+      <form id="channel-form">
+        <div class="modal-header">
+          <div>
+            <h2 id="channel-dialog-title">创建推送渠道</h2>
+            <p class="muted">敏感字段保存后不会回显；编辑时留空表示保留原配置。</p>
+          </div>
+          <button id="channel-dialog-close" class="icon-button" type="button"
+            aria-label="关闭推送渠道弹窗">×</button>
+        </div>
+        <div class="modal-body">
+          <label>渠道名称
+            <input id="channel-name" maxlength="100" autocomplete="off"
+              placeholder="例如：VPS Kuma 或 QQ私聊" required>
+          </label>
+          <label>渠道类型
+            <select id="channel-type">
+              <option value="uptime_kuma">Uptime Kuma Push</option>
+              <option value="napcat">NapCat QQ</option>
+            </select>
+          </label>
+          <div id="channel-kuma-fields" class="channel-form-section">
+            <label>Push URL
+              <input id="channel-push-url" type="password" maxlength="2048"
+                autocomplete="new-password"
+                placeholder="https://你的Kuma地址/api/push/监控Token">
+            </label>
+          </div>
+          <div id="channel-napcat-fields" class="channel-form-section" hidden>
+            <label>OneBot HTTP API 地址
+              <input id="channel-base-url" maxlength="2048" autocomplete="off"
+                placeholder="例如：http://napcat.example:3000">
+            </label>
+            <label>OneBot Access Token
+              <input id="channel-token" type="password" maxlength="512"
+                autocomplete="new-password" placeholder="NapCat HTTP Server Token">
+            </label>
+            <label>发送目标
+              <select id="channel-target-type">
+                <option value="private">私聊 QQ</option>
+                <option value="group">QQ群</option>
+              </select>
+            </label>
+            <label>QQ号或群号
+              <input id="channel-target-id" inputmode="numeric" maxlength="20"
+                autocomplete="off" placeholder="只输入数字">
+            </label>
+          </div>
+          <div class="modal-actions">
+            <button id="channel-cancel" class="secondary" type="button">取消</button>
+            <button id="channel-save" class="push-action" type="submit">加密保存渠道</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="channel-assignment-dialog" aria-labelledby="channel-assignment-title">
+      <form id="channel-assignment-form">
+        <div class="modal-header">
+          <div>
+            <h2 id="channel-assignment-title">消息推送设置</h2>
+            <p id="channel-assignment-account" class="muted"></p>
+          </div>
+          <button id="channel-assignment-close" class="icon-button" type="button"
+            aria-label="关闭消息推送设置">×</button>
+        </div>
+        <div class="modal-body">
+          <p class="muted">勾选要分配给此账户的推送渠道。一个渠道可以服务多个账户。</p>
+          <div id="channel-assignment-list" class="channel-choice-list"></div>
+          <div class="modal-actions">
+            <button id="channel-assignment-cancel" class="secondary" type="button">取消</button>
+            <button class="push-action" type="submit">保存分配</button>
+          </div>
+        </div>
+      </form>
+    </dialog>
+
+    <dialog id="delete-channel-dialog" aria-labelledby="delete-channel-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="delete-channel-title">删除推送渠道</h2>
+          <p class="muted">删除后会自动解除它与所有账户的分配关系。</p>
+        </div>
+        <button id="delete-channel-close" class="icon-button" type="button"
+          aria-label="关闭删除推送渠道弹窗">×</button>
+      </div>
+      <div class="modal-body">
+        <p>确认删除推送渠道 <span id="delete-channel-name" class="confirmation-name"></span>？</p>
+        <div class="modal-actions">
+          <button id="delete-channel-cancel" class="secondary" type="button">取消</button>
+          <button id="delete-channel-confirm" class="danger" type="button">确认删除</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="browser-login-dialog" class="browser-dialog" aria-labelledby="browser-dialog-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="browser-dialog-title">交互式浏览器登录</h2>
+          <p id="browser-dialog-account" class="muted"></p>
+        </div>
+        <button id="browser-dialog-close" class="icon-button" type="button"
+          aria-label="关闭浏览器登录弹窗">×</button>
+      </div>
+      <div class="modal-body browser-modal-body">
+        <div class="browser-toolbar">
+          <span id="browser-page-title" class="badge">正在启动浏览器…</span>
+          <span id="browser-location" class="browser-location"></span>
+          <button id="browser-refresh" class="secondary" type="button">刷新画面</button>
+        </div>
+        <div id="browser-stage" class="browser-stage" tabindex="-1"
+          role="application" aria-label="目标网站浏览器">
+          <img id="browser-screenshot" alt="远程浏览器画面" draggable="false">
+          <input id="browser-keyboard-capture" class="browser-keyboard-capture" type="text"
+            autocomplete="off" autocapitalize="off" spellcheck="false"
+            aria-label="目标网站键盘输入">
+          <div id="browser-loading" class="browser-loading">正在加载 Chromium 登录画面…</div>
+          <div class="browser-focus-hint">点击网站中的输入框，然后直接使用键盘</div>
+        </div>
+        <p class="muted browser-help">这是插件指定的真实登录页面。点击网站中的输入框后，
+          可直接输入、粘贴并使用 Tab、Enter、退格和方向键。输入内容只送到当前临时
+          浏览器，不写入日志；检测到登录成功后才会加密保存 Cookie 和 localStorage。</p>
+        <div class="modal-actions">
+          <button id="browser-discard" class="secondary" type="button">放弃并关闭</button>
+          <button id="browser-save" type="button">登录完成，检测并保存</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="execution-detail-dialog" aria-labelledby="execution-detail-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="execution-detail-title">签到记录详情</h2>
+          <p id="execution-detail-summary" class="muted"></p>
+        </div>
+        <button id="execution-detail-close" class="icon-button" type="button"
+          aria-label="关闭签到详情弹窗">×</button>
+      </div>
+      <div class="modal-body">
+        <p id="execution-detail-message"></p>
+        <pre id="execution-detail-json"></pre>
+        <div class="modal-actions">
+          <button id="execution-detail-done" type="button">关闭</button>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="force-browser-save-dialog" aria-labelledby="force-browser-save-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="force-browser-save-title">未能自动确认登录</h2>
+          <p class="muted">网站可能隐藏了登录标志，或者刚刚完成跳转。</p>
+        </div>
+        <button id="force-browser-save-close" class="icon-button" type="button"
+          aria-label="关闭保存确认弹窗">×</button>
+      </div>
+      <div class="modal-body">
+        <p>如果目标网站画面已经明确显示你的用户名或个人中心，可以仍然保存当前
+          Cookie 和浏览器存储。若尚未登录，请选择“继续检查登录”。</p>
+        <p class="muted">强制保存只代表保存浏览器状态，不会把它误标记为已验证登录。
+          后续签到仍会再次检查状态。</p>
+        <div class="modal-actions">
+          <button id="force-browser-save-cancel" class="secondary" type="button">
+            继续检查登录
+          </button>
+          <button id="force-browser-save-confirm" type="button">仍然加密保存</button>
+        </div>
+      </div>
+    </dialog>
+
+    <script>
+      const state = {
+        plugins: [],
+        accounts: [],
+        executions: [],
+        schedules: [],
+        notificationChannels: [],
+        backupStatus: null,
+        seenExecutionIds: new Set(),
+        historyMode: "initial"
+      };
+      let csrfToken = null;
+      const pluginSelect = document.querySelector("#plugin-select");
+      const accountContainer = document.querySelector("#accounts");
+      const channelContainer = document.querySelector("#notification-channels");
+      const notice = document.querySelector("#notice");
+      const historyContainer = document.querySelector("#execution-history");
+      const backupBadges = document.querySelector("#backup-badges");
+      const backupSummary = document.querySelector("#backup-summary");
+      const backupSettingsDialog = document.querySelector("#backup-settings-dialog");
+      const backupSettingsForm = document.querySelector("#backup-settings-form");
+      const executionDetailDialog = document.querySelector("#execution-detail-dialog");
+      const executionDetailSummary = document.querySelector("#execution-detail-summary");
+      const executionDetailMessage = document.querySelector("#execution-detail-message");
+      const executionDetailJson = document.querySelector("#execution-detail-json");
+      const forceBrowserSaveDialog = document.querySelector("#force-browser-save-dialog");
+      const deleteDialog = document.querySelector("#delete-account-dialog");
+      const deleteForm = document.querySelector("#delete-account-form");
+      const deleteAccountName = document.querySelector("#delete-account-name");
+      const deleteConfirmation = document.querySelector("#delete-confirmation");
+      const deleteSubmitButton = document.querySelector("#delete-dialog-submit");
+      const scheduleDialog = document.querySelector("#schedule-dialog");
+      const scheduleForm = document.querySelector("#schedule-form");
+      const scheduleDialogAccount = document.querySelector("#schedule-dialog-account");
+      const scheduleDelete = document.querySelector("#schedule-delete");
+      const channelDialog = document.querySelector("#channel-dialog");
+      const channelForm = document.querySelector("#channel-form");
+      const channelType = document.querySelector("#channel-type");
+      const channelKumaFields = document.querySelector("#channel-kuma-fields");
+      const channelNapcatFields = document.querySelector("#channel-napcat-fields");
+      const channelAssignmentDialog = document.querySelector("#channel-assignment-dialog");
+      const channelAssignmentForm = document.querySelector("#channel-assignment-form");
+      const channelAssignmentList = document.querySelector("#channel-assignment-list");
+      const deleteChannelDialog = document.querySelector("#delete-channel-dialog");
+      const browserDialog = document.querySelector("#browser-login-dialog");
+      const browserDialogAccount = document.querySelector("#browser-dialog-account");
+      const browserPageTitle = document.querySelector("#browser-page-title");
+      const browserLocation = document.querySelector("#browser-location");
+      const browserStage = document.querySelector("#browser-stage");
+      const browserScreenshot = document.querySelector("#browser-screenshot");
+      const browserKeyboardCapture = document.querySelector("#browser-keyboard-capture");
+      const browserLoading = document.querySelector("#browser-loading");
+      const browserSave = document.querySelector("#browser-save");
+      const browserDiscard = document.querySelector("#browser-discard");
+      let deleteAccountId = null;
+      let deleteExpectedLabel = null;
+      let scheduleAccountId = null;
+      let editingChannelId = null;
+      let assignmentAccountId = null;
+      let deletingChannelId = null;
+      let activeBrowserSession = null;
+      let browserPollTimer = null;
+      let browserClosing = false;
+      let browserInputQueue = Promise.resolve();
+      let browserFrameRequestActive = false;
+      let browserFrameObjectUrl = null;
+
+      function showNotice(message, error = false) {
+        notice.textContent = message;
+        notice.className = error ? "error" : "";
+        notice.style.display = "block";
+        window.clearTimeout(showNotice.timer);
+        showNotice.timer = window.setTimeout(() => { notice.style.display = "none"; }, 4500);
+      }
+
+      async function api(path, options = {}) {
+        const method = (options.method || "GET").toUpperCase();
+        const headers = {"Content-Type": "application/json", ...(options.headers || {})};
+        if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
+          headers["X-AutoSign-CSRF"] = csrfToken;
+        }
+        const response = await fetch(path, {
+          ...options,
+          headers
+        });
+        if (response.status === 401) {
+          window.location.replace("/");
+          throw new Error("管理员登录已过期");
+        }
+        if (!response.ok) {
+          let message = `请求失败（${response.status}）`;
+          try {
+            const body = await response.json();
+            message = body.detail || message;
+          } catch {}
+          const error = new Error(message);
+          error.status = response.status;
+          throw error;
+        }
+        if (response.status === 204) return null;
+        return response.json();
+      }
+
+      function element(tag, className, text) {
+        const node = document.createElement(tag);
+        if (className) node.className = className;
+        if (text !== undefined) node.textContent = text;
+        return node;
+      }
+
+      const ICONS = {
+        power: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 2v10"/><path d="M6.35 5.65a8 8 0 1 0 11.3 0"/></svg>',
+        trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>'
+      };
+
+      function statusBadge(label, configured) {
+        return element(
+          "span",
+          `badge ${configured ? "ok" : "missing"}`,
+          `${label} · ${configured ? "已设置" : "未设置"}`
+        );
+      }
+
+      function loginBadge(loggedIn) {
+        return element(
+          "span",
+          `badge ${loggedIn ? "ok" : "missing"}`,
+          loggedIn ? "已登录" : "未登录"
+        );
+      }
+
+      function openDeleteDialog(account) {
+        deleteAccountId = account.id;
+        deleteExpectedLabel = account.label;
+        deleteForm.reset();
+        deleteAccountName.textContent = account.label;
+        deleteDialog.showModal();
+        window.setTimeout(() => deleteConfirmation.focus(), 0);
+      }
+
+      function scheduleForAccount(accountId) {
+        return state.schedules.find((schedule) => schedule.account_id === accountId);
+      }
+
+      function openScheduleDialog(account) {
+        const schedule = scheduleForAccount(account.id);
+        scheduleAccountId = account.id;
+        scheduleDialogAccount.textContent = `账户：${account.label}`;
+        document.querySelector("#schedule-enabled").checked = schedule?.enabled ?? true;
+        document.querySelector("#schedule-time").value = schedule?.daily_time ?? "08:00";
+        document.querySelector("#schedule-timezone").value =
+          schedule?.timezone ?? "Asia/Shanghai";
+        document.querySelector("#schedule-jitter").value = schedule?.jitter_minutes ?? 15;
+        document.querySelector("#schedule-retries").value = schedule?.max_retries ?? 2;
+        document.querySelector("#schedule-retry-delay").value =
+          schedule?.retry_delay_minutes ?? 5;
+        scheduleDelete.hidden = !schedule;
+        scheduleDialog.showModal();
+      }
+
+      function pluginForAccount(account) {
+        return state.plugins.find((plugin) => plugin.id === account.plugin_id);
+      }
+
+      function supportsInteractiveLogin(account) {
+        const plugin = pluginForAccount(account);
+        return Boolean(plugin && plugin.capabilities.includes("interactive_login"));
+      }
+
+      function scheduleBrowserRefresh(delay = 850) {
+        window.clearTimeout(browserPollTimer);
+        if (!activeBrowserSession) return;
+        browserPollTimer = window.setTimeout(refreshBrowserFrame, delay);
+      }
+
+      function handleBrowserSessionError(error) {
+        showNotice(error.message, true);
+        if (error.status !== 404) return false;
+        activeBrowserSession = null;
+        window.clearTimeout(browserPollTimer);
+        if (browserDialog.open) browserDialog.close();
+        return true;
+      }
+
+      async function refreshBrowserInfo() {
+        if (!activeBrowserSession) return;
+        const info = await api(`/api/v1/browser-sessions/${activeBrowserSession.id}`);
+        activeBrowserSession = info;
+        browserPageTitle.textContent = info.title || "浏览器登录";
+        browserLocation.textContent = info.url;
+      }
+
+      async function refreshBrowserFrame() {
+        if (!activeBrowserSession || browserFrameRequestActive) return;
+        const sessionId = activeBrowserSession.id;
+        browserFrameRequestActive = true;
+        try {
+          const response = await fetch(
+            `/api/v1/browser-sessions/${sessionId}/screenshot?t=${Date.now()}`,
+            {cache: "no-store"}
+          );
+          if (response.status === 401) {
+            activeBrowserSession = null;
+            window.clearTimeout(browserPollTimer);
+            window.location.replace("/");
+            return;
+          }
+          if (!response.ok) {
+            let message = `浏览器画面请求失败（${response.status}）`;
+            try {
+              const body = await response.json();
+              message = body.detail || message;
+            } catch {}
+            const error = new Error(message);
+            error.status = response.status;
+            throw error;
+          }
+          if (!activeBrowserSession || activeBrowserSession.id !== sessionId) return;
+          const nextUrl = URL.createObjectURL(await response.blob());
+          const previousUrl = browserFrameObjectUrl;
+          browserFrameObjectUrl = nextUrl;
+          browserScreenshot.src = nextUrl;
+          if (previousUrl) URL.revokeObjectURL(previousUrl);
+        } catch (error) {
+          if (activeBrowserSession) {
+            if (!handleBrowserSessionError(error)) scheduleBrowserRefresh(2000);
+          }
+        } finally {
+          browserFrameRequestActive = false;
+        }
+      }
+
+      function queueBrowserInput(path, body) {
+        browserInputQueue = browserInputQueue
+          .then(() => api(path, {method: "POST", body: JSON.stringify(body)}))
+          .then(() => refreshBrowserFrame())
+          .catch((error) => handleBrowserSessionError(error));
+      }
+
+      async function openBrowserLogin(account) {
+        browserDialogAccount.textContent = `账户：${account.label}`;
+        browserPageTitle.textContent = "正在启动浏览器…";
+        browserLocation.textContent = "";
+        browserLoading.hidden = false;
+        browserScreenshot.removeAttribute("src");
+        browserKeyboardCapture.value = "";
+        browserDialog.showModal();
+        try {
+          activeBrowserSession = await api(
+            `/api/v1/accounts/${account.id}/browser-session`,
+            {method: "POST", body: "{}"}
+          );
+          browserPageTitle.textContent = activeBrowserSession.title;
+          browserLocation.textContent = activeBrowserSession.url;
+          refreshBrowserFrame();
+        } catch (error) {
+          showNotice(error.message, true);
+          browserDialog.close();
+        }
+      }
+
+      async function closeBrowserLogin(saveState, forceSave = false) {
+        if (browserClosing) return;
+        browserClosing = true;
+        window.clearTimeout(browserPollTimer);
+        try {
+          let closeResult = null;
+          if (activeBrowserSession) {
+            closeResult = await api(`/api/v1/browser-sessions/${activeBrowserSession.id}/close`, {
+              method: "POST",
+              body: JSON.stringify({save_state: saveState, force_save: forceSave})
+            });
+          }
+          activeBrowserSession = null;
+          browserDialog.close();
+          await loadAccounts();
+          if (!saveState) {
+            showNotice("临时浏览器会话已丢弃");
+          } else if (closeResult?.verified) {
+            showNotice("已检测到登录状态，浏览器会话已加密保存");
+          } else {
+            showNotice("已按你的确认加密保存当前浏览器状态；后续签到会再次验证");
+          }
+        } catch (error) {
+          if (saveState && !forceSave && error.status === 409) {
+            forceBrowserSaveDialog.showModal();
+          } else {
+            handleBrowserSessionError(error);
+          }
+        } finally {
+          browserClosing = false;
+        }
+      }
+
+      function renderPlugins() {
+        const realGroup = document.createElement("optgroup");
+        realGroup.label = "正式网站插件";
+        const testGroup = document.createElement("optgroup");
+        testGroup.label = "测试用插件";
+        for (const plugin of state.plugins) {
+          const option = element(
+            "option",
+            "",
+            plugin.id === "demo" ? `${plugin.name}（测试用）` : plugin.name
+          );
+          option.value = plugin.id;
+          (plugin.id === "demo" ? testGroup : realGroup).append(option);
+        }
+        pluginSelect.replaceChildren(realGroup, testGroup);
+      }
+
+      function renderAccounts() {
+        if (!state.accounts.length) {
+          accountContainer.replaceChildren(element("p", "muted", "还没有账户，请先创建一个 Demo 账户。"));
+          return;
+        }
+        accountContainer.replaceChildren(...state.accounts.map((account) => {
+          const card = element(
+            "article",
+            `card account-card${account.enabled ? "" : " disabled"}`
+          );
+          const title = element("h3", "", account.label);
+          const status = element("span", `badge ${account.enabled ? "ok" : "missing"}`,
+            account.enabled ? "已启用" : "已禁用");
+          const meta = element("div", "meta", `${account.plugin_id} · ${account.id}`);
+          const badges = element("div", "status-badges");
+          badges.append(
+            status,
+            loginBadge(account.secret_names.includes("browser_storage_state")),
+            statusBadge("Uptime Kuma", account.monitor_configured),
+            statusBadge("QQ通知", account.napcat_configured)
+          );
+          const schedule = scheduleForAccount(account.id);
+          const scheduleMeta = element("div", "schedule-meta");
+          if (schedule) {
+            const next = schedule.next_run_at
+              ? new Date(schedule.next_run_at).toLocaleString("zh-CN", {hour12: false})
+              : "暂停";
+            scheduleMeta.append(
+              element("span", "", `自动签到：${schedule.enabled ? `${schedule.daily_time} 后随机延迟` : "已暂停"}`),
+              element("span", "", `下次签到：${next}`)
+            );
+          } else {
+            scheduleMeta.append(element("span", "", "自动签到：未设置"));
+          }
+          const actions = element("div", "actions account-actions");
+
+          if (supportsInteractiveLogin(account)) {
+            const login = element("button", "login-action", "交互登录");
+            login.addEventListener("click", () => openBrowserLogin(account));
+            actions.append(login);
+          }
+
+          const execute = element("button", "execute-action", "执行账户签到");
+          execute.addEventListener("click", async () => {
+            execute.disabled = true;
+            try {
+              const result = await api(`/api/v1/accounts/${account.id}/execute`, {
+                method: "POST",
+                body: "{}"
+              });
+              showNotice(`${result.message}；验证：${result.verified ? "通过" : "未通过"}`);
+              await loadNewExecutions();
+            } catch (error) {
+              showNotice(error.message, true);
+            } finally {
+              execute.disabled = false;
+            }
+          });
+
+          const toggle = element(
+            "button",
+            `corner-button power-button${account.enabled ? " enabled" : ""}`
+          );
+          toggle.type = "button";
+          toggle.innerHTML = ICONS.power;
+          toggle.title = account.enabled ? "禁用账户" : "启用账户";
+          toggle.setAttribute("aria-label", toggle.title);
+          toggle.addEventListener("click", async () => {
+            try {
+              await api(`/api/v1/accounts/${account.id}`, {
+                method: "PATCH",
+                body: JSON.stringify({enabled: !account.enabled})
+              });
+              await loadAccounts();
+              showNotice(`账户已${account.enabled ? "禁用" : "启用"}`);
+            } catch (error) { showNotice(error.message, true); }
+          });
+
+          const editSchedule = element("button", "schedule-action", "自动签到计划");
+          editSchedule.addEventListener("click", () => openScheduleDialog(account));
+
+          const pushSettings = element("button", "push-action", "消息推送设置");
+          pushSettings.addEventListener("click", () => openChannelAssignment(account));
+
+          const remove = element("button", "inline-delete");
+          remove.type = "button";
+          remove.innerHTML = ICONS.trash;
+          remove.title = "删除账户";
+          remove.setAttribute("aria-label", "删除账户");
+          remove.addEventListener("click", () => openDeleteDialog(account));
+
+          actions.append(execute, editSchedule, pushSettings, remove);
+          card.append(title, meta, badges, scheduleMeta, actions, toggle);
+          return card;
+        }));
+      }
+
+      function channelTypeText(type) {
+        return type === "uptime_kuma" ? "Uptime Kuma Push" : "NapCat QQ";
+      }
+
+      function updateChannelFormFields() {
+        const isKuma = channelType.value === "uptime_kuma";
+        channelKumaFields.hidden = !isKuma;
+        channelNapcatFields.hidden = isKuma;
+      }
+
+      function openChannelDialog(channel = null) {
+        editingChannelId = channel?.id ?? null;
+        channelForm.reset();
+        document.querySelector("#channel-dialog-title").textContent =
+          channel ? "编辑推送渠道" : "创建推送渠道";
+        document.querySelector("#channel-name").value = channel?.name ?? "";
+        channelType.value = channel?.channel_type ?? "uptime_kuma";
+        channelType.disabled = Boolean(channel);
+        const placeholder = channel ? "已加密保存；留空保留原配置" : "";
+        document.querySelector("#channel-push-url").placeholder =
+          placeholder || "https://你的Kuma地址/api/push/监控Token";
+        document.querySelector("#channel-base-url").placeholder =
+          placeholder || "例如：http://napcat.example:3000";
+        document.querySelector("#channel-token").placeholder =
+          placeholder || "NapCat HTTP Server Token";
+        document.querySelector("#channel-target-id").placeholder =
+          placeholder || "只输入数字";
+        updateChannelFormFields();
+        channelDialog.showModal();
+        window.setTimeout(() => document.querySelector("#channel-name").focus(), 0);
+      }
+
+      function openChannelAssignment(account) {
+        assignmentAccountId = account.id;
+        document.querySelector("#channel-assignment-account").textContent =
+          `账户：${account.label}`;
+        if (!state.notificationChannels.length) {
+          channelAssignmentList.replaceChildren(
+            element("p", "muted", "尚未创建推送渠道，请先在主页面创建。")
+          );
+        } else {
+          channelAssignmentList.replaceChildren(...state.notificationChannels.map((channel) => {
+            const choice = element("label", "channel-choice");
+            const checkbox = document.createElement("input");
+            checkbox.type = "checkbox";
+            checkbox.value = channel.id;
+            checkbox.checked = account.notification_channel_ids.includes(channel.id);
+            const copy = element("span");
+            copy.append(
+              element("strong", "", channel.name),
+              element("div", "meta", channelTypeText(channel.channel_type))
+            );
+            choice.append(checkbox, copy);
+            return choice;
+          }));
+        }
+        channelAssignmentDialog.showModal();
+      }
+
+      function renderNotificationChannels() {
+        function channelCard(channel) {
+          const card = element("article", "card channel-card");
+          const assignedNames = channel.assigned_account_ids
+            .map((id) => state.accounts.find((account) => account.id === id)?.label)
+            .filter(Boolean);
+          const assigned = element(
+            "div",
+            "channel-accounts",
+            assignedNames.length
+              ? `已分配：${assignedNames.join("、")}`
+              : "尚未分配给账户"
+          );
+          const actions = element("div", "actions channel-actions");
+          const test = element("button", "success-action", "测试");
+          test.addEventListener("click", async () => {
+            test.disabled = true;
+            try {
+              const result = await api(
+                `/api/v1/notification-channels/${channel.id}/test`,
+                {method: "POST", body: "{}"}
+              );
+              showNotice(`${channel.name}：${result.message}`);
+            } catch (error) {
+              showNotice(error.message, true);
+            } finally {
+              test.disabled = false;
+            }
+          });
+          const edit = element("button", "secondary", "编辑");
+          edit.addEventListener("click", () => openChannelDialog(channel));
+          const remove = element("button", "inline-delete");
+          remove.type = "button";
+          remove.innerHTML = ICONS.trash;
+          remove.title = "删除推送渠道";
+          remove.setAttribute("aria-label", remove.title);
+          remove.addEventListener("click", () => {
+            deletingChannelId = channel.id;
+            document.querySelector("#delete-channel-name").textContent = channel.name;
+            deleteChannelDialog.showModal();
+          });
+          actions.append(test, edit, remove);
+          card.append(element("h3", "", channel.name), assigned, actions);
+          return card;
+        }
+
+        const groups = [
+          {type: "uptime_kuma", title: "Uptime Kuma"},
+          {type: "napcat", title: "NapCat QQ"}
+        ].map(({type, title}) => {
+          const column = element("section", "channel-column");
+          const list = element("div", "channel-list");
+          const channels = state.notificationChannels.filter(
+            (channel) => channel.channel_type === type
+          );
+          list.replaceChildren(...(
+            channels.length
+              ? channels.map(channelCard)
+              : [element("p", "muted", `还没有 ${title} 渠道。`)]
+          ));
+          column.append(element("h3", "", title), list);
+          return column;
+        });
+        channelContainer.replaceChildren(...groups);
+      }
+
+      function formatDateTime(value) {
+        return value
+          ? new Date(value).toLocaleString("zh-CN", {hour12: false})
+          : "暂无";
+      }
+
+      function formatBytes(value) {
+        if (value === null || value === undefined) return "暂无";
+        if (value < 1024) return `${value} B`;
+        if (value < 1024 * 1024) return `${(value / 1024).toFixed(1)} KB`;
+        return `${(value / 1024 / 1024).toFixed(1)} MB`;
+      }
+
+      function renderBackupStatus() {
+        const status = state.backupStatus;
+        if (!status) return;
+        backupBadges.replaceChildren(
+          element(
+            "span",
+            `badge ${status.enabled ? "ok" : "missing"}`,
+            `自动备份 · ${status.enabled ? "已启用" : "未启用"}`
+          ),
+          statusBadge("备份密码", status.configured)
+        );
+        function backupItem(label, value, error = false) {
+          const item = element("div", "backup-summary-item");
+          item.append(
+            element("div", "meta", label),
+            element("div", `backup-value ${error ? "backup-error" : ""}`, value)
+          );
+          return item;
+        }
+        const primaryRow = element("div", "backup-summary-row primary");
+        primaryRow.append(
+          backupItem(
+            "计划",
+            status.enabled
+              ? `每天 ${status.daily_time} · ${status.timezone} · 保留 ${status.retention_count} 份`
+              : "未启用；仍可手动执行加密备份"
+          ),
+          backupItem("下次自动备份", formatDateTime(status.next_run_at))
+        );
+        const secondaryRow = element("div", "backup-summary-row secondary");
+        secondaryRow.append(
+          backupItem(
+            "最近自动备份",
+            status.latest_backup_name
+              ? `${status.latest_backup_name} · ${formatBytes(status.latest_backup_size)}`
+              : "暂无"
+          ),
+          backupItem("最近成功", formatDateTime(status.last_success_at)),
+          backupItem(
+            "最近失败",
+            status.last_error
+              ? `${formatDateTime(status.last_failure_at)} · ${status.last_error}`
+              : "无",
+            Boolean(status.last_error)
+          )
+        );
+        backupSummary.replaceChildren(primaryRow, secondaryRow);
+        document.querySelector("#backup-run").disabled = !status.configured;
+        document.querySelector("#backup-check").disabled =
+          !status.configured || !status.latest_backup_name;
+      }
+
+      async function loadBackupStatus() {
+        state.backupStatus = await api("/api/v1/backups/status");
+        renderBackupStatus();
+      }
+
+      function openBackupSettings() {
+        const status = state.backupStatus;
+        document.querySelector("#backup-settings-enabled").checked = status.enabled;
+        document.querySelector("#backup-settings-time").value = status.daily_time;
+        document.querySelector("#backup-settings-timezone").value = status.timezone;
+        document.querySelector("#backup-settings-retention").value = status.retention_count;
+        document.querySelector("#backup-settings-password").value = "";
+        document.querySelector("#backup-password-hint").textContent = status.configured
+          ? "备份密码已加密保存。留空表示继续使用当前密码；填写新密码会替换它。"
+          : "尚未设置备份密码。启用自动备份前必须填写至少 12 个字符。";
+        backupSettingsDialog.showModal();
+      }
+
+      async function loadAccounts() {
+        [state.accounts, state.schedules, state.notificationChannels] = await Promise.all([
+          api("/api/v1/accounts"),
+          api("/api/v1/schedules"),
+          api("/api/v1/notification-channels")
+        ]);
+        renderAccounts();
+        renderNotificationChannels();
+      }
+
+      function executionStatusText(status) {
+        return {
+          success: "成功",
+          already_signed: "今日已签到",
+          failed: "失败",
+          interaction_required: "需要登录"
+        }[status] || status;
+      }
+
+      function openExecutionDetail(record) {
+        executionDetailSummary.textContent =
+          `${record.account_label} · ${record.plugin_id} · ${executionStatusText(record.status)}`;
+        executionDetailMessage.textContent = record.message;
+        executionDetailJson.textContent = JSON.stringify({
+          执行时间: new Date(record.started_at).toLocaleString("zh-CN", {hour12: false}),
+          验证通过: record.verified,
+          耗时毫秒: record.duration_ms,
+          详细结果: record.details
+        }, null, 2);
+        executionDetailDialog.showModal();
+      }
+
+      function renderExecutions() {
+        if (!state.executions.length) {
+          const emptyMessage = state.historyMode === "initial"
+            ? "还没有签到记录。点击账户卡片中的“执行账户签到”开始测试。"
+            : "暂无新签到记录。";
+          historyContainer.replaceChildren(
+            element("p", "muted", emptyMessage)
+          );
+          return;
+        }
+        historyContainer.replaceChildren(...state.executions.map((record) => {
+          const item = element("article", "history-item");
+          const identity = element("div");
+          identity.append(
+            element("strong", "", record.account_label),
+            element("div", "meta",
+              new Date(record.started_at).toLocaleString("zh-CN", {hour12: false}))
+          );
+          const status = element(
+            "span",
+            `badge ${record.status}`,
+            executionStatusText(record.status)
+          );
+          const message = element("div", "history-message", record.message);
+          const detail = element("button", "secondary", "详情");
+          detail.addEventListener("click", () => openExecutionDetail(record));
+          item.append(identity, status, message, detail);
+          return item;
+        }));
+      }
+
+      async function loadNewExecutions() {
+        const latest = await api("/api/v1/executions?limit=6");
+        const newRecords = latest.filter(
+          (record) => !state.seenExecutionIds.has(record.id)
+        );
+        if (newRecords.length) {
+          const merged = [...newRecords, ...state.executions];
+          state.executions = merged.filter(
+            (record, index) => merged.findIndex((item) => item.id === record.id) === index
+          ).slice(0, 6);
+        }
+        latest.forEach((record) => state.seenExecutionIds.add(record.id));
+        renderExecutions();
+        return newRecords.length;
+      }
+
+      document.querySelector("#account-form").addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const labelInput = document.querySelector("#account-label");
+        try {
+          await api("/api/v1/accounts", {
+            method: "POST",
+            body: JSON.stringify({
+              plugin_id: pluginSelect.value,
+              label: labelInput.value,
+              enabled: true,
+              settings: {}
+            })
+          });
+          labelInput.value = "";
+          await loadAccounts();
+          showNotice("账户已创建并写入数据库");
+        } catch (error) { showNotice(error.message, true); }
+      });
+
+      document.querySelector("#delete-dialog-close").addEventListener("click", () => {
+        deleteDialog.close();
+      });
+
+      document.querySelector("#delete-dialog-cancel").addEventListener("click", () => {
+        deleteDialog.close();
+      });
+
+      deleteForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!deleteAccountId || !deleteExpectedLabel) return;
+        deleteSubmitButton.disabled = true;
+        try {
+          await api(`/api/v1/accounts/${deleteAccountId}/delete`, {
+            method: "POST",
+            body: JSON.stringify({confirm_label: deleteConfirmation.value})
+          });
+          deleteDialog.close();
+          await loadAccounts();
+          showNotice("账户及其关联数据已删除");
+        } catch (error) {
+          showNotice(error.message, true);
+        } finally {
+          deleteSubmitButton.disabled = false;
+        }
+      });
+
+      deleteDialog.addEventListener("close", () => {
+        deleteForm.reset();
+        deleteAccountName.textContent = "";
+        deleteAccountId = null;
+        deleteExpectedLabel = null;
+      });
+
+      document.querySelector("#schedule-dialog-close").addEventListener(
+        "click", () => scheduleDialog.close()
+      );
+      document.querySelector("#schedule-cancel").addEventListener(
+        "click", () => scheduleDialog.close()
+      );
+      scheduleForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!scheduleAccountId) return;
+        const saveButton = document.querySelector("#schedule-save");
+        saveButton.disabled = true;
+        try {
+          await api(`/api/v1/accounts/${scheduleAccountId}/schedule`, {
+            method: "PUT",
+            body: JSON.stringify({
+              enabled: document.querySelector("#schedule-enabled").checked,
+              daily_time: document.querySelector("#schedule-time").value,
+              timezone: document.querySelector("#schedule-timezone").value,
+              jitter_minutes: Number(document.querySelector("#schedule-jitter").value),
+              max_retries: Number(document.querySelector("#schedule-retries").value),
+              retry_delay_minutes:
+                Number(document.querySelector("#schedule-retry-delay").value)
+            })
+          });
+          scheduleDialog.close();
+          await loadAccounts();
+          showNotice("自动签到计划已保存");
+        } catch (error) {
+          showNotice(error.message, true);
+        } finally {
+          saveButton.disabled = false;
+        }
+      });
+      scheduleDelete.addEventListener("click", async () => {
+        if (!scheduleAccountId) return;
+        scheduleDelete.disabled = true;
+        try {
+          await api(`/api/v1/accounts/${scheduleAccountId}/schedule`, {method: "DELETE"});
+          scheduleDialog.close();
+          await loadAccounts();
+          showNotice("自动签到计划已删除");
+        } catch (error) {
+          showNotice(error.message, true);
+        } finally {
+          scheduleDelete.disabled = false;
+        }
+      });
+      scheduleDialog.addEventListener("close", () => {
+        scheduleAccountId = null;
+        scheduleForm.reset();
+      });
+
+      document.querySelector("#channel-create").addEventListener(
+        "click", () => openChannelDialog()
+      );
+      document.querySelector("#channel-dialog-close").addEventListener(
+        "click", () => channelDialog.close()
+      );
+      document.querySelector("#channel-cancel").addEventListener(
+        "click", () => channelDialog.close()
+      );
+      channelType.addEventListener("change", updateChannelFormFields);
+      channelForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const saveButton = document.querySelector("#channel-save");
+        const isKuma = channelType.value === "uptime_kuma";
+        const payload = {
+          name: document.querySelector("#channel-name").value,
+          channel_type: channelType.value,
+          push_url: isKuma
+            ? document.querySelector("#channel-push-url").value || null
+            : null,
+          base_url: isKuma
+            ? null
+            : document.querySelector("#channel-base-url").value || null,
+          access_token: isKuma
+            ? null
+            : document.querySelector("#channel-token").value || null,
+          target_type: isKuma
+            ? null
+            : document.querySelector("#channel-target-type").value,
+          target_id: isKuma
+            ? null
+            : document.querySelector("#channel-target-id").value || null
+        };
+        if (
+          !editingChannelId
+          && (
+            (isKuma && !payload.push_url)
+            || (!isKuma && (!payload.base_url || !payload.access_token || !payload.target_id))
+          )
+        ) {
+          showNotice("请完整填写推送渠道配置", true);
+          return;
+        }
+        saveButton.disabled = true;
+        const wasEditing = Boolean(editingChannelId);
+        try {
+          await api(
+            editingChannelId
+              ? `/api/v1/notification-channels/${editingChannelId}`
+              : "/api/v1/notification-channels",
+            {
+              method: editingChannelId ? "PUT" : "POST",
+              body: JSON.stringify(payload)
+            }
+          );
+          channelDialog.close();
+          await loadAccounts();
+          showNotice(wasEditing ? "推送渠道已更新" : "推送渠道已加密保存");
+        } catch (error) {
+          showNotice(error.message, true);
+        } finally {
+          saveButton.disabled = false;
+        }
+      });
+      channelDialog.addEventListener("close", () => {
+        editingChannelId = null;
+        channelType.disabled = false;
+        channelForm.reset();
+        updateChannelFormFields();
+      });
+
+      document.querySelector("#channel-assignment-close").addEventListener(
+        "click", () => channelAssignmentDialog.close()
+      );
+      document.querySelector("#channel-assignment-cancel").addEventListener(
+        "click", () => channelAssignmentDialog.close()
+      );
+      channelAssignmentForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!assignmentAccountId) return;
+        const channelIds = [
+          ...channelAssignmentList.querySelectorAll('input[type="checkbox"]:checked')
+        ].map((input) => input.value);
+        try {
+          await api(
+            `/api/v1/accounts/${assignmentAccountId}/notification-channels`,
+            {
+              method: "PUT",
+              body: JSON.stringify({channel_ids: channelIds})
+            }
+          );
+          channelAssignmentDialog.close();
+          await loadAccounts();
+          showNotice("账户的消息推送渠道已更新");
+        } catch (error) {
+          showNotice(error.message, true);
+        }
+      });
+      channelAssignmentDialog.addEventListener("close", () => {
+        assignmentAccountId = null;
+        channelAssignmentList.replaceChildren();
+      });
+
+      function closeDeleteChannelDialog() {
+        deleteChannelDialog.close();
+      }
+      document.querySelector("#delete-channel-close").addEventListener(
+        "click", closeDeleteChannelDialog
+      );
+      document.querySelector("#delete-channel-cancel").addEventListener(
+        "click", closeDeleteChannelDialog
+      );
+      document.querySelector("#delete-channel-confirm").addEventListener("click", async () => {
+        if (!deletingChannelId) return;
+        const button = document.querySelector("#delete-channel-confirm");
+        button.disabled = true;
+        try {
+          await api(`/api/v1/notification-channels/${deletingChannelId}`, {
+            method: "DELETE"
+          });
+          deleteChannelDialog.close();
+          await loadAccounts();
+          showNotice("推送渠道已删除并解除账户分配");
+        } catch (error) {
+          showNotice(error.message, true);
+        } finally {
+          button.disabled = false;
+        }
+      });
+      deleteChannelDialog.addEventListener("close", () => {
+        deletingChannelId = null;
+        document.querySelector("#delete-channel-name").textContent = "";
+      });
+
+      browserScreenshot.addEventListener("load", async () => {
+        browserLoading.hidden = true;
+        try {
+          await refreshBrowserInfo();
+          scheduleBrowserRefresh();
+        } catch (error) {
+          showNotice(error.message, true);
+        }
+      });
+
+      browserScreenshot.addEventListener("error", () => {
+        if (activeBrowserSession) scheduleBrowserRefresh(2000);
+      });
+
+      browserScreenshot.addEventListener("click", async (event) => {
+        if (!activeBrowserSession) return;
+        const rect = browserScreenshot.getBoundingClientRect();
+        const x = (event.clientX - rect.left) * activeBrowserSession.viewport_width / rect.width;
+        const y = (event.clientY - rect.top) * activeBrowserSession.viewport_height / rect.height;
+        browserKeyboardCapture.focus({preventScroll: true});
+        try {
+          await api(`/api/v1/browser-sessions/${activeBrowserSession.id}/click`, {
+            method: "POST",
+            body: JSON.stringify({x, y})
+          });
+          refreshBrowserFrame();
+        } catch (error) { showNotice(error.message, true); }
+      });
+
+      browserKeyboardCapture.addEventListener("input", () => {
+        if (!activeBrowserSession) return;
+        const text = browserKeyboardCapture.value;
+        browserKeyboardCapture.value = "";
+        if (!text) return;
+        queueBrowserInput(
+          `/api/v1/browser-sessions/${activeBrowserSession.id}/type`,
+          {text}
+        );
+      });
+
+      browserKeyboardCapture.addEventListener("keydown", (event) => {
+        if (!activeBrowserSession) return;
+        const supportedKeys = new Map([
+          ["Tab", "Tab"], ["Enter", "Enter"], ["Backspace", "Backspace"],
+          ["Escape", "Escape"], ["Delete", "Delete"], ["ArrowUp", "ArrowUp"],
+          ["ArrowDown", "ArrowDown"], ["ArrowLeft", "ArrowLeft"],
+          ["ArrowRight", "ArrowRight"], ["Home", "Home"], ["End", "End"],
+          ["PageUp", "PageUp"], ["PageDown", "PageDown"]
+        ]);
+        const browserKey = supportedKeys.get(event.key);
+        if (!browserKey) return;
+        event.preventDefault();
+        queueBrowserInput(
+          `/api/v1/browser-sessions/${activeBrowserSession.id}/press`,
+          {key: browserKey}
+        );
+      });
+
+      document.querySelector("#browser-refresh").addEventListener("click", refreshBrowserFrame);
+      browserSave.addEventListener("click", () => closeBrowserLogin(true));
+      browserDiscard.addEventListener("click", () => closeBrowserLogin(false));
+      document.querySelector("#browser-dialog-close").addEventListener("click", () => {
+        closeBrowserLogin(false);
+      });
+
+      browserDialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        closeBrowserLogin(false);
+      });
+
+      browserDialog.addEventListener("close", () => {
+        window.clearTimeout(browserPollTimer);
+        browserKeyboardCapture.value = "";
+        browserLoading.hidden = false;
+        browserScreenshot.removeAttribute("src");
+        if (browserFrameObjectUrl) {
+          URL.revokeObjectURL(browserFrameObjectUrl);
+          browserFrameObjectUrl = null;
+        }
+      });
+
+      document.querySelector("#logout").addEventListener("click", async () => {
+        try {
+          await api("/api/v1/auth/logout", {method: "POST", body: "{}"});
+          window.location.replace("/");
+        } catch (error) { showNotice(error.message, true); }
+      });
+
+      document.querySelector("#demo-test").addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const result = await api("/api/v1/plugins/demo/execute", {
+            method: "POST",
+            body: JSON.stringify({settings: {reward: 3}})
+          });
+          showNotice(`${result.message}；验证：${result.verified ? "通过" : "未通过"}`);
+        } catch (error) {
+          showNotice(error.message, true);
+        } finally {
+          button.disabled = false;
+        }
+      });
+      document.querySelector("#history-refresh").addEventListener("click", async () => {
+        try {
+          const newCount = await loadNewExecutions();
+          showNotice(newCount ? `发现 ${newCount} 条新签到记录` : "暂无新签到记录");
+        } catch (error) { showNotice(error.message, true); }
+      });
+      document.querySelector("#history-clear").addEventListener("click", () => {
+        state.executions.forEach((record) => state.seenExecutionIds.add(record.id));
+        state.executions = [];
+        state.historyMode = "incremental";
+        renderExecutions();
+        showNotice("已清空当前显示；实际签到日志仍保留");
+      });
+      document.querySelector("#backup-settings").addEventListener("click", openBackupSettings);
+      document.querySelector("#backup-settings-close").addEventListener(
+        "click", () => backupSettingsDialog.close()
+      );
+      document.querySelector("#backup-settings-cancel").addEventListener(
+        "click", () => backupSettingsDialog.close()
+      );
+      backupSettingsDialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        backupSettingsDialog.close();
+      });
+      backupSettingsForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        const submit = document.querySelector("#backup-settings-submit");
+        const password = document.querySelector("#backup-settings-password").value;
+        const payload = {
+          enabled: document.querySelector("#backup-settings-enabled").checked,
+          daily_time: document.querySelector("#backup-settings-time").value,
+          timezone: document.querySelector("#backup-settings-timezone").value,
+          retention_count: Number(document.querySelector("#backup-settings-retention").value)
+        };
+        if (password) payload.password = password;
+        submit.disabled = true;
+        try {
+          state.backupStatus = await api("/api/v1/backups/settings", {
+            method: "PUT",
+            body: JSON.stringify(payload)
+          });
+          renderBackupStatus();
+          backupSettingsDialog.close();
+          showNotice("系统备份设置已保存并立即生效");
+        } catch (error) {
+          showNotice(error.message, true);
+        } finally {
+          submit.disabled = false;
+        }
+      });
+      document.querySelector("#backup-run").addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const result = await api("/api/v1/backups/run", {method: "POST", body: "{}"});
+          state.backupStatus = result.status;
+          renderBackupStatus();
+          showNotice(result.message);
+        } catch (error) {
+          showNotice(error.message, true);
+        } finally {
+          button.disabled = !state.backupStatus?.configured;
+        }
+      });
+      document.querySelector("#backup-check").addEventListener("click", async (event) => {
+        const button = event.currentTarget;
+        button.disabled = true;
+        try {
+          const result = await api("/api/v1/backups/check-latest", {
+            method: "POST", body: "{}"
+          });
+          state.backupStatus = result.status;
+          renderBackupStatus();
+          showNotice(result.message);
+        } catch (error) {
+          showNotice(error.message, true);
+        } finally {
+          button.disabled = !state.backupStatus?.configured || !state.backupStatus?.latest_backup_name;
+        }
+      });
+      document.querySelector("#execution-detail-close").addEventListener(
+        "click", () => executionDetailDialog.close()
+      );
+      document.querySelector("#execution-detail-done").addEventListener(
+        "click", () => executionDetailDialog.close()
+      );
+      executionDetailDialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        executionDetailDialog.close();
+      });
+      function closeForceBrowserSaveDialog() {
+        forceBrowserSaveDialog.close();
+      }
+      document.querySelector("#force-browser-save-close").addEventListener(
+        "click", closeForceBrowserSaveDialog
+      );
+      document.querySelector("#force-browser-save-cancel").addEventListener(
+        "click", closeForceBrowserSaveDialog
+      );
+      document.querySelector("#force-browser-save-confirm").addEventListener("click", () => {
+        closeForceBrowserSaveDialog();
+        closeBrowserLogin(true, true);
+      });
+      forceBrowserSaveDialog.addEventListener("cancel", (event) => {
+        event.preventDefault();
+        closeForceBrowserSaveDialog();
+      });
+
+      api("/api/v1/auth/status")
+        .then((authStatus) => {
+          if (!authStatus.authenticated) {
+            window.location.replace("/");
+            return null;
+          }
+          csrfToken = authStatus.csrf_token;
+          return Promise.all([
+            api("/api/v1/plugins"),
+            api("/api/v1/accounts"),
+            api("/api/v1/executions?limit=6"),
+            api("/api/v1/schedules"),
+            api("/api/v1/notification-channels"),
+            api("/api/v1/backups/status")
+          ]);
+        })
+        .then((result) => {
+          if (!result) return;
+          const [plugins, accounts, executions, schedules, notificationChannels, backupStatus] = result;
+          state.plugins = plugins;
+          state.accounts = accounts;
+          state.executions = executions;
+          executions.forEach((record) => state.seenExecutionIds.add(record.id));
+          state.schedules = schedules;
+          state.notificationChannels = notificationChannels;
+          state.backupStatus = backupStatus;
+          renderPlugins();
+          renderAccounts();
+          renderNotificationChannels();
+          renderBackupStatus();
+          renderExecutions();
+        })
+        .catch((error) => showNotice(error.message, true));
+    </script>
+  </body>
+</html>

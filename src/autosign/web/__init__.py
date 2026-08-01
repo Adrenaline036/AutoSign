@@ -1,0 +1,2 @@
+"""AutoSign web application."""
+

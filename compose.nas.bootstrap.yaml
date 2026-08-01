@@ -1,0 +1,53 @@
+services:
+  autosign-permissions:
+    image: autosign-local:0.13.1
+    pull_policy: never
+    container_name: autosign-permissions
+    user: "0:0"
+    command:
+      - /bin/sh
+      - -c
+      - |
+        set -eu
+        mkdir -p /data/backups /data/restores
+        chown -R 10001:10001 /data
+        chmod 700 /data /data/backups /data/restores
+        find /data -type f -exec chmod 600 {} +
+    volumes:
+      - /path/to/autosign/data:/data
+    restart: "no"
+
+  autosign:
+    image: autosign-local:0.13.1
+    pull_policy: never
+    container_name: autosign
+    restart: unless-stopped
+    depends_on:
+      autosign-permissions:
+        condition: service_completed_successfully
+    shm_size: "512mb"
+    environment:
+      AUTOSIGN_ENVIRONMENT: production
+      AUTOSIGN_HOST: 0.0.0.0
+      AUTOSIGN_PORT: 8000
+      AUTOSIGN_DATA_DIR: /data
+      AUTOSIGN_LOG_LEVEL: INFO
+      AUTOSIGN_BROWSER_HEADLESS: "false"
+      AUTOSIGN_SCHEDULER_POLL_SECONDS: "15"
+      AUTOSIGN_BACKUP_ENABLED: ${AUTOSIGN_BACKUP_ENABLED:-false}
+      AUTOSIGN_BACKUP_DAILY_TIME: ${AUTOSIGN_BACKUP_DAILY_TIME:-03:30}
+      AUTOSIGN_BACKUP_TIMEZONE: ${AUTOSIGN_BACKUP_TIMEZONE:-Asia/Shanghai}
+      AUTOSIGN_BACKUP_RETENTION_COUNT: ${AUTOSIGN_BACKUP_RETENTION_COUNT:-7}
+      AUTOSIGN_BACKUP_PASSWORD: ${AUTOSIGN_BACKUP_PASSWORD:-}
+      AUTOSIGN_AUTH_SECURE_COOKIE: "false"
+      AUTOSIGN_MASTER_KEY: ${AUTOSIGN_MASTER_KEY:?Missing AUTOSIGN_MASTER_KEY in .env}
+      TZ: Asia/Shanghai
+    ports:
+      - "18080:8000"
+    volumes:
+      - /path/to/autosign/data:/data
+    security_opt:
+      - no-new-privileges:true
+    pids_limit: 512
+    mem_limit: 1536m
+    cpus: 2.0
