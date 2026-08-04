@@ -6,6 +6,7 @@ __pycache__
 .ruff_cache
 data
 output
+local
 tests
 .vscode
 .env

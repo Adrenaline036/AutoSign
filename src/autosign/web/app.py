@@ -1,14 +1,16 @@
 from __future__ import annotations
 
-from contextlib import asynccontextmanager
+import asyncio
+from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
 from time import monotonic
 from typing import Any
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlparse
 
-from fastapi import FastAPI, HTTPException, Query, Request
+from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from autosign import __version__
@@ -24,6 +26,7 @@ from autosign.core.browser_sessions import (
     BrowserSessionInputError,
     BrowserSessionManager,
     BrowserSessionNotFoundError,
+    BrowserStorageStateError,
 )
 from autosign.core.config import Settings, get_settings
 from autosign.core.db import Account, Database
@@ -102,6 +105,13 @@ def create_app(
     browser_sessions = browser_manager_override or BrowserSessionManager(
         timeout_seconds=settings.browser_session_timeout_seconds,
         headless=settings.browser_headless,
+        hide_window=settings.browser_hide_window,
+        proxy_server=(
+            settings.browser_proxy_server.get_secret_value()
+            if settings.browser_proxy_server is not None
+            else None
+        ),
+        proxy_bypass=settings.browser_proxy_bypass,
     )
     executions = ExecutionService(database, runner)
     schedules = ScheduleService(database)
@@ -233,6 +243,18 @@ def create_app(
     app.state.backups = backups
     app.state.backup_coordinator = backup_coordinator
     failed_logins: dict[str, list[float]] = {}
+
+    if settings.browser_live_enabled:
+        if not settings.browser_novnc_root.is_dir():
+            raise RuntimeError(
+                f"noVNC assets were not found at {settings.browser_novnc_root}. "
+                "Disable AUTOSIGN_BROWSER_LIVE_ENABLED or install noVNC."
+            )
+        app.mount(
+            "/novnc",
+            StaticFiles(directory=settings.browser_novnc_root),
+            name="novnc",
+        )
 
     def authenticated_payload(request: Request) -> dict[str, object] | None:
         if settings.auth_disabled:
@@ -595,6 +617,11 @@ def create_app(
             last_activity=info.last_activity,
             viewport_width=info.viewport_width,
             viewport_height=info.viewport_height,
+            live_url=(
+                f"/browser-sessions/{info.id}/live"
+                if settings.browser_live_enabled
+                else None
+            ),
         )
 
     def browser_error(exc: Exception) -> HTTPException:
@@ -602,6 +629,8 @@ def create_app(
             return HTTPException(status_code=404, detail=str(exc))
         if isinstance(exc, BrowserSessionInputError):
             return HTTPException(status_code=400, detail=str(exc))
+        if isinstance(exc, BrowserStorageStateError):
+            return HTTPException(status_code=409, detail=str(exc))
         return HTTPException(
             status_code=502,
             detail=f"Browser operation failed safely: {type(exc).__name__}",
@@ -659,6 +688,92 @@ def create_app(
             return serialize_browser_session(await browser_sessions.get_info(session_id))
         except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
             raise browser_error(exc) from exc
+
+    @app.get("/browser-sessions/{session_id}/live", include_in_schema=False)
+    async def live_browser(session_id: str) -> FileResponse:
+        if not settings.browser_live_enabled:
+            raise HTTPException(status_code=404, detail="Live browser is not enabled.")
+        try:
+            await browser_sessions.focus(session_id)
+        except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
+            raise browser_error(exc) from exc
+        return FileResponse(
+            STATIC_DIR / "live_browser.html",
+            headers={"Cache-Control": "no-store, max-age=0"},
+        )
+
+    @app.websocket("/api/v1/browser-sessions/{session_id}/vnc")
+    async def browser_vnc(session_id: str, websocket: WebSocket) -> None:
+        payload = (
+            {"csrf": "testing-csrf"}
+            if settings.auth_disabled
+            else auth.verify_session(websocket.cookies.get(SESSION_COOKIE_NAME))
+        )
+        if payload is None:
+            await websocket.close(code=4401)
+            return
+
+        origin = websocket.headers.get("origin")
+        host = websocket.headers.get("host")
+        if origin and host and urlparse(origin).netloc != host:
+            await websocket.close(code=4403)
+            return
+
+        try:
+            await browser_sessions.focus(session_id)
+        except (BrowserSessionNotFoundError, BrowserSessionInputError):
+            await websocket.close(code=4404)
+            return
+
+        try:
+            reader, writer = await asyncio.open_connection(
+                settings.browser_vnc_host,
+                settings.browser_vnc_port,
+            )
+        except OSError:
+            await websocket.close(code=1011, reason="The live browser service is unavailable.")
+            return
+
+        offered_protocols = {
+            item.strip()
+            for item in websocket.headers.get("sec-websocket-protocol", "").split(",")
+            if item.strip()
+        }
+        await websocket.accept(
+            subprotocol="binary" if "binary" in offered_protocols else None
+        )
+
+        async def websocket_to_vnc() -> None:
+            while True:
+                message = await websocket.receive()
+                if message["type"] == "websocket.disconnect":
+                    return
+                data = message.get("bytes")
+                if data is None and message.get("text") is not None:
+                    data = message["text"].encode()
+                if data:
+                    writer.write(data)
+                    await writer.drain()
+
+        async def vnc_to_websocket() -> None:
+            while data := await reader.read(65536):
+                await websocket.send_bytes(data)
+
+        tasks = {
+            asyncio.create_task(websocket_to_vnc()),
+            asyncio.create_task(vnc_to_websocket()),
+        }
+        try:
+            _, pending = await asyncio.wait(tasks, return_when=asyncio.FIRST_COMPLETED)
+            for task in pending:
+                task.cancel()
+            for task in tasks:
+                with suppress(asyncio.CancelledError, WebSocketDisconnect, OSError):
+                    await task
+        finally:
+            writer.close()
+            with suppress(OSError):
+                await writer.wait_closed()
 
     @app.get("/api/v1/browser-sessions/{session_id}/screenshot")
     async def browser_screenshot(session_id: str) -> Response:
@@ -737,6 +852,7 @@ def create_app(
             AccountNotFoundError,
             BrowserSessionNotFoundError,
             BrowserSessionInputError,
+            BrowserStorageStateError,
             LookupError,
         ) as exc:
             raise browser_error(exc) from exc
@@ -750,6 +866,8 @@ def create_app(
         except AccountNotFoundError as exc:
             raise account_error(exc) from exc
         except ValueError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except BrowserStorageStateError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     @app.get("/api/v1/schedules", response_model=list[ScheduleRead])

@@ -10,6 +10,7 @@ def test_registry_discovers_builtin_plugins() -> None:
     assert [plugin.manifest.id for plugin in plugins] == [
         "acgrip",
         "demo",
+        "vikacg",
         "yamibo",
         "baidu_tieba",
     ]

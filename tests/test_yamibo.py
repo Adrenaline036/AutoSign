@@ -7,15 +7,24 @@ from autosign.plugins.yamibo import YamiboPlugin
 
 
 class FakeYamiboBrowser:
-    def __init__(self, *, formhash: str | None, message: str, body: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        formhash: str | None,
+        message: str,
+        body: str = "",
+        statuses: list[int] | None = None,
+    ) -> None:
         self.formhash = formhash
         self.message = message
         self.body = body
+        self.statuses = statuses or [200]
         self.visits: list[tuple[str, str | None]] = []
 
     async def goto(self, url: str, *, referrer: str | None = None) -> int:
         self.visits.append((url, referrer))
-        return 200
+        index = min(len(self.visits) - 1, len(self.statuses) - 1)
+        return self.statuses[index]
 
     async def input_value(self, _selector: str) -> str | None:
         return self.formhash
@@ -40,6 +49,21 @@ async def test_yamibo_sign_success() -> None:
         "https://bbs.yamibo.com/plugin.php?id=zqlj_sign&sign=token%2Bvalue",
         YamiboPlugin.SIGN_URL,
     )
+
+
+@pytest.mark.asyncio
+async def test_yamibo_allows_initial_waf_challenge_to_finish() -> None:
+    browser = FakeYamiboBrowser(
+        formhash="token",
+        message="签到成功！",
+        statuses=[405, 200],
+    )
+    result = await YamiboPlugin().sign(
+        PluginContext(account_id="a1", account_label="百合会", browser=browser)
+    )
+
+    assert result.status is SignStatus.SUCCESS
+    assert result.verified is True
 
 
 @pytest.mark.asyncio

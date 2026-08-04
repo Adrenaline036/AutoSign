@@ -57,6 +57,9 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
         "<h2>系统备份</h2>"
     )
     assert 'id="browser-screenshot"' in dashboard.text
+    assert 'id="browser-live-panel"' in dashboard.text
+    assert 'id="browser-live-open"' in dashboard.text
+    assert "activeBrowserSession.live_url" in dashboard.text
     assert 'id="browser-keyboard-capture"' in dashboard.text
     assert "browserFrameRequestActive" in dashboard.text
     assert 'id="execution-history"' in dashboard.text
@@ -73,6 +76,7 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
         "demo",
         "acgrip",
         "baidu_tieba",
+        "vikacg",
         "yamibo",
     }
     assert execution.status_code == 200

@@ -7,6 +7,7 @@ from autosign.plugin_sdk import AutoSignPlugin
 from autosign.plugins.acgrip import AcgripPlugin
 from autosign.plugins.baidu_tieba import BaiduTiebaPlugin
 from autosign.plugins.demo import DemoPlugin
+from autosign.plugins.vikacg import VikacgPlugin
 from autosign.plugins.yamibo import YamiboPlugin
 
 
@@ -15,7 +16,8 @@ class PluginRegistry:
 
     def __init__(self, builtins: Iterable[type[AutoSignPlugin]] | None = None) -> None:
         self._plugin_types = list(
-            builtins or [DemoPlugin, AcgripPlugin, BaiduTiebaPlugin, YamiboPlugin]
+            builtins
+            or [DemoPlugin, AcgripPlugin, BaiduTiebaPlugin, VikacgPlugin, YamiboPlugin]
         )
         self._plugins: dict[str, AutoSignPlugin] = {}
 

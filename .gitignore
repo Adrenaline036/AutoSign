@@ -14,6 +14,7 @@ build/
 *.egg-info/
 node_modules/
 output/
+local/
 .playwright-cli/
 .vscode/
 *.db
@@ -24,6 +25,8 @@ output/
 *.log
 master-key.env
 compose-*-backup.yaml
+compose.nas.*-test.yaml
+compose.nas.*-local.yaml
 *.zip
 *.tar
 develop_log.md

@@ -1,33 +1,48 @@
 # AutoSign
 
 [![CI](https://github.com/Adrenaline036/AutoSign/actions/workflows/ci.yml/badge.svg)](https://github.com/Adrenaline036/AutoSign/actions/workflows/ci.yml)
+[![Python 3.11+](https://img.shields.io/badge/Python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 
-AutoSign 是一个面向 NAS 与 Docker 的自托管自动签到平台。它把账户、加密登录状态、定时计划、执行记录、消息通知和备份放在统一的 Web GUI 中，同时将每个网站的登录与签到逻辑封装为独立插件，方便继续扩展新站点。
+AutoSign 是一个面向 NAS 与 Docker 的自托管自动签到平台。它提供统一的 Web GUI，用于管理账户、网站登录状态、定时任务、执行记录、消息通知和加密备份；每个网站的签到实现均为独立插件，核心调度与站点逻辑彼此解耦。
 
 > [!IMPORTANT]
-> 本项目仅用于管理你本人有权使用的账户。使用前请确认目标网站允许自动化访问，并自行控制签到频率。项目不会尝试绕过 Cloudflare、验证码或网站的反自动化策略。
+> 本项目仅用于管理你本人有权使用的账户。请遵守目标网站的服务条款并控制访问频率。AutoSign 不会绕过验证码、Cloudflare 或其他反自动化措施；需要安全验证时，应通过实时交互浏览器由用户本人完成。
 
-## 功能
+## 0.15.0 概览
 
-- Web GUI 管理账户、交互登录、定时计划和执行记录
-- Playwright 交互式登录，登录状态使用 AES-GCM 加密后保存
-- SQLite 持久化，内置数据库迁移
-- 每日定时执行、随机延迟、失败重试和时区设置
-- Uptime Kuma Push 与 NapCat OneBot HTTP 通知渠道
-- 手动及每日自动加密备份、校验和安全暂存恢复
-- 首次启动创建管理员密码，包含 HttpOnly 会话、CSRF 防护与登录限速
-- 插件 SDK 与核心调度解耦，新增网站无需修改核心业务
+- 新增 VikACG 每日签到插件。
+- 百合会插件兼容初始 HTTP 405 JavaScript/WAF 挑战。
+- Docker 交互登录升级为受管理员会话保护的 noVNC 实时浏览器。
+- 浏览器状态支持 Cookie、localStorage、sessionStorage 与 IndexedDB。
+- 修复 Playwright 1.55 在部分 IndexedDB 外部键上的导出/恢复问题。
+- 登录状态恢复、按钮点击和签到结果均经过独立验证，不会把“点击过”直接当作“签到成功”。
+
+## 主要功能
+
+- 账户、计划、执行记录与通知渠道的 Web GUI
+- Playwright 驱动的网站原生登录与签到
+- noVNC 实时浏览器，支持弹窗、安全验证、鼠标、键盘和粘贴
+- AES-GCM 加密保存网站登录状态及通知凭据
+- SQLite 持久化与 Alembic 自动迁移
+- 每日计划、时区、随机延迟、失败重试与手动执行
+- Uptime Kuma Push 与 NapCat/OneBot HTTP 通知
+- 每日自动通知汇总及最终签到结果推送
+- 手动/自动加密备份、备份校验与安全暂存恢复
+- 管理员密码、HttpOnly 会话、CSRF 防护与登录限速
+- 稳定的插件 SDK 和可独立测试的站点实现
 
 ## 内置插件
 
-| 插件 | 用途 | 登录方式 |
-| --- | --- | --- |
-| Demo | 不访问外部网站，用于验证整条执行流程 | 无需登录 |
-| 百度贴吧 | 发现关注贴吧并逐一签到 | 百度原生交互登录 |
-| 百合会 | 执行论坛每日打卡 | 网站交互登录 |
-| ACGRip | 执行 Discuz DSU 每日签到 | 网站交互登录 |
+| 插件 | 版本 | 功能 | 登录方式 |
+| --- | --- | --- | --- |
+| Demo | 内置 | 不访问外部网站，用于验证执行与通知链路 | 无需登录 |
+| 百度贴吧 | 内置 | 获取关注贴吧并逐一签到 | 百度原生交互登录 |
+| 百合会 | 0.2.1 | 论坛每日打卡，兼容初始 WAF 挑战 | 网站交互登录 |
+| ACGRip | 内置 | Discuz DSU 每日签到 | 网站交互登录 |
+| VikACG | 0.1.0 | 积分任务中的每日签到 | 网站交互登录 |
 
-网站页面与接口随时可能变化。插件失效时请先查看容器日志和最近签到记录，再提交 Issue；Issue 中不要粘贴 Cookie、Token、完整页面存档或真实账号信息。
+网站页面和接口可能随时变化。插件失效时，请先检查最近执行记录与容器日志；公开 Issue 中不要附带 Cookie、Token、完整浏览器状态、真实账号或包含个人信息的页面存档。
 
 ## 架构
 
@@ -35,18 +50,38 @@ AutoSign 是一个面向 NAS 与 Docker 的自托管自动签到平台。它把�
 flowchart LR
     UI["Web GUI / API"] --> Core["账户、调度与执行核心"]
     Core --> SDK["插件 SDK"]
-    SDK --> Plugins["站点插件"]
-    Core --> DB["SQLite"]
+    SDK --> Plugins["独立站点插件"]
+    Core --> DB["SQLite / Alembic"]
     Core --> Vault["AES-GCM 秘密库"]
+    Core --> Browser["Playwright / noVNC"]
     Core --> Notify["Kuma / NapCat"]
     Core --> Backup["加密备份"]
 ```
 
-核心代码不会保存站点专属 URL、字段或结果判断；这些内容都属于 `autosign.plugins`。插件只能通过 `autosign.plugin_sdk` 提供的上下文使用浏览器、秘密和日志能力。
+核心负责账户、调度、持久化、加密、通知、备份和浏览器生命周期；插件负责站点 URL、登录判断、页面字段、点击方式及签到结果验证。新增站点无需把站点专属分支写入核心。
 
-## 快速开始：Docker Compose
+## 快速开始
 
-要求：Docker Engine 与 Docker Compose v2。首次构建需要访问软件包源并下载 Chromium。
+要求：
+
+- Docker Engine
+- Docker Compose v2
+- 首次构建时能够下载 Python 依赖与 Chromium
+- 用于初始化主密钥的 Python 3.11 或更高版本
+
+### Linux / NAS
+
+```bash
+git clone https://github.com/Adrenaline036/AutoSign.git
+cd AutoSign
+
+python3 -m venv .venv
+.venv/bin/pip install -e .
+cp .env.example .env
+.venv/bin/python -m autosign init-key
+
+docker compose up -d --build
+```
 
 ### Windows PowerShell
 
@@ -62,80 +97,87 @@ Copy-Item .env.example .env
 docker compose up -d --build
 ```
 
-### Linux / NAS SSH
-
-```bash
-git clone https://github.com/Adrenaline036/AutoSign.git
-cd AutoSign
-
-python3 -m venv .venv
-.venv/bin/pip install -e .
-cp .env.example .env
-.venv/bin/python -m autosign init-key
-
-docker compose up -d --build
-```
-
-打开 <http://127.0.0.1:8000>。从另一台设备访问时，把 `127.0.0.1` 换成部署主机的局域网地址。首次打开会要求创建至少 12 个字符的管理员密码。
-
-查看状态和日志：
+打开 <http://127.0.0.1:8000>。从其他设备访问时，将 `127.0.0.1` 换成部署主机的局域网地址。首次进入会要求创建至少 12 个字符的管理员密码。
 
 ```bash
 docker compose ps
 docker compose logs --tail 200 autosign
 ```
 
-停止服务：
+## 首次使用
 
-```bash
-docker compose down
-```
+1. 在首页选择插件并创建账户。
+2. 点击“交互登录”，在新打开的实时浏览器标签中完成网站原生登录和安全验证。
+3. 关闭实时浏览器标签，返回 AutoSign，点击“登录完成，检测并保存”。
+4. 手动执行一次签到，确认结果为成功或今日已签。
+5. 设置每日执行时间、时区、随机延迟和重试策略。
+6. 创建 Uptime Kuma 或 NapCat 渠道，并分配给相应账户。
+7. 配置加密备份，并至少完成一次备份校验。
+
+## 浏览器登录状态
+
+AutoSign 将以下浏览器状态合并保存：
+
+- Cookie
+- localStorage
+- sessionStorage
+- IndexedDB
+
+状态在写入 SQLite 前由 `AUTOSIGN_MASTER_KEY` 使用 AES-GCM 加密。API 和 GUI 只返回已保存秘密的名称，不回显内容。
+
+Docker 中的 Chromium 运行在虚拟显示环境。原始 VNC 服务只监听容器回环地址；noVNC 静态资源与 WebSocket 转发均要求有效的管理员会话。无需映射 `5900`，也不应将 VNC 或管理端口直接暴露到公网。
 
 ## 配置
 
-公开仓库只包含 `.env.example`。请复制为 `.env` 后填写，绝对不要提交真实 `.env`。
+复制 `.env.example` 为 `.env` 后修改。真实 `.env` 不应提交到 Git。
 
 | 变量 | 默认值 | 说明 |
 | --- | --- | --- |
-| `AUTOSIGN_MASTER_KEY` | 无 | 加密 Cookie、Token 等秘密；必须生成并妥善备份 |
-| `AUTOSIGN_DATA_DIR` | `./data` | SQLite、日志和备份目录 |
-| `AUTOSIGN_PORT` | `8000` | 容器内服务端口 |
-| `AUTOSIGN_BROWSER_HEADLESS` | `true` | 本地开发的浏览器模式；Docker 配置已使用虚拟显示 |
-| `AUTOSIGN_SCHEDULER_POLL_SECONDS` | `15` | 调度器检查间隔 |
-| `AUTOSIGN_AUTH_SECURE_COOKIE` | `false` | 仅在已通过 HTTPS 访问时设为 `true` |
-| `AUTOSIGN_BACKUP_ENABLED` | `false` | 是否启用每日自动备份 |
+| `AUTOSIGN_MASTER_KEY` | 无 | 加密登录状态和通知凭据；使用 `python -m autosign init-key` 生成 |
+| `AUTOSIGN_DATA_DIR` | `./data` | SQLite、日志、备份和暂存恢复目录 |
+| `AUTOSIGN_PORT` | `8000` | AutoSign 服务端口 |
+| `AUTOSIGN_BROWSER_HEADLESS` | `true` | 是否使用无界面 Chromium；Docker 示例使用虚拟显示下的 headful 模式 |
+| `AUTOSIGN_BROWSER_HIDE_WINDOW` | `false` | 桌面开发时将原生 headful 窗口移出屏幕 |
+| `AUTOSIGN_BROWSER_LIVE_ENABLED` | `false` | 启用 noVNC 实时登录；Docker 示例已开启 |
+| `AUTOSIGN_BROWSER_PROXY_SERVER` | 无 | 可选 Playwright HTTP/SOCKS 代理；可能包含凭据，不要提交 |
+| `AUTOSIGN_BROWSER_PROXY_BYPASS` | 无 | 逗号分隔的代理绕过域名 |
+| `AUTOSIGN_SCHEDULER_POLL_SECONDS` | `15` | 调度器轮询间隔 |
+| `AUTOSIGN_AUTH_SECURE_COOKIE` | `false` | 仅通过 HTTPS 访问时设为 `true` |
+| `AUTOSIGN_BACKUP_ENABLED` | `false` | 是否开启每日自动备份 |
 | `AUTOSIGN_BACKUP_DAILY_TIME` | `03:30` | 自动备份时间，格式 `HH:MM` |
 | `AUTOSIGN_BACKUP_TIMEZONE` | `Asia/Shanghai` | 自动备份时区 |
-| `AUTOSIGN_BACKUP_RETENTION_COUNT` | `7` | 自动备份保留份数 |
-| `AUTOSIGN_BACKUP_PASSWORD` | 无 | 自动备份的独立强密码，至少 12 个字符 |
+| `AUTOSIGN_BACKUP_RETENTION_COUNT` | `7` | 自动备份保留数量 |
+| `AUTOSIGN_BACKUP_PASSWORD` | 无 | 自动备份独立密码，至少 12 个字符 |
 
-`AUTOSIGN_MASTER_KEY` 与 `data/` 缺一不可。主密钥丢失后，数据库内加密保存的登录状态和通知凭据无法恢复，因此应将二者一起备份，但不要放入 Git 仓库。
+`AUTOSIGN_MASTER_KEY` 和 `data/` 必须配套备份。丢失主密钥后，数据库内已有加密状态无法恢复。不要在初始化过的实例上重新生成或覆盖主密钥。
 
-## 使用流程
+## NAS 部署
 
-1. 在首页选择插件并创建账户。
-2. 对需要登录的站点点击“交互登录”，在嵌入的目标页面完成网站原生登录。
-3. 点击保存登录状态，然后手动执行一次账户签到。
-4. 在“自动签到计划”中设置时间、时区、随机延迟与重试策略。
-5. 按需创建 Uptime Kuma 或 NapCat 渠道，再把渠道分配给账户。
-6. 在“系统备份”中配置每日加密备份，并至少完成一次备份校验。
+仓库中的 `compose.nas.yaml` 是通用示例，适用于已提前导入本地镜像的 NAS。使用前必须修改：
 
-不要把管理端口直接暴露到公网。远程访问建议使用可信局域网、VPN，或配置 HTTPS 反向代理；启用 HTTPS 后同时设置 `AUTOSIGN_AUTH_SECURE_COOKIE=true`。
+- `image`：实际镜像名称与版本
+- `ports`：未被占用的主机端口
+- `volumes`：NAS 上真实存在且容器 UID `10001` 可写的数据目录
+- `.env`：该实例专属且已备份的主密钥
+- 资源限制：根据设备内存和并发浏览器数量调整
 
-## NAS 部署说明
+首次遇到目录权限问题时，可参考 `compose.nas.bootstrap.yaml` 的一次性权限初始化服务。不要把包含个人路径、代理、固定域名解析或凭据的 NAS Compose 提交回公开仓库。
 
-根目录的 `compose.nas.yaml` 是一个 NAS 示例，使用预先导入的镜像、`18080` 主机端口和绝对数据目录。使用前必须按自己的设备修改：
+目标网站的可达性取决于部署网络。可使用 `AUTOSIGN_BROWSER_PROXY_SERVER` 与 `AUTOSIGN_BROWSER_PROXY_BYPASS` 做通用浏览器分流，但 AutoSign 不内置任何私人代理节点、固定 IP 或区域绕过配置。
 
-- `image`：本机实际导入的镜像名称与版本
-- `ports`：没有冲突的主机端口
-- `volumes`：NAS 上真实存在且容器可写的数据目录
-- `.env`：新生成的主密钥和可选备份配置
+## 通知渠道
 
-通用设备优先使用 `compose.yaml` 自行构建。不要把为个人 NAS 修改后的 Compose 文件提交回公开仓库。
+### Uptime Kuma Push
+
+为账户分配 Push URL 后，每次最终执行结果都会更新对应监控。Kuma 的心跳间隔应大于“24 小时 + 最大随机延迟 + 最大重试窗口”，避免正常延迟被判为离线。
+
+### NapCat / OneBot
+
+支持通过 OneBot HTTP 接口发送 QQ 通知。服务地址、访问令牌和目标 QQ/群号均作为加密秘密保存。AutoSign 与 NapCat 不在同一网络时，应先使用 VPN、反向代理或其他受控网络连接验证 HTTP 可达性。
 
 ## 加密备份与恢复
 
-在运行中的容器内创建手动备份：
+创建加密备份：
 
 ```bash
 docker exec -it autosign python -m autosign backup
@@ -144,20 +186,29 @@ docker exec -it autosign python -m autosign backup
 校验备份：
 
 ```bash
-docker exec -it autosign python -m autosign backup-check /data/backups/<文件名>.asbackup
+docker exec -it autosign python -m autosign backup-check /data/backups/<backup>.asbackup
 ```
 
-安全暂存恢复内容：
+安全暂存恢复：
 
 ```bash
-docker exec -it autosign python -m autosign restore /data/backups/<文件名>.asbackup
+docker exec -it autosign python -m autosign restore /data/backups/<backup>.asbackup
 ```
 
-恢复命令不会覆盖在线数据库，而是将校验后的内容解包到新的 `data/restores/<时间>/` 目录。请先停止服务并额外备份当前数据，再按照其中的 `RESTORE_INSTRUCTIONS.txt` 人工替换。备份密码不能找回，也不应与管理员密码共用。
+`restore` 不会覆盖在线数据库，而是将校验后的内容解包到新的 `data/restores/<时间>/` 目录。停止服务并额外备份当前数据后，再按照生成的 `RESTORE_INSTRUCTIONS.txt` 人工替换。备份密码无法找回，也不应与管理员密码共用。
+
+## 升级
+
+1. 创建并校验一次加密备份。
+2. 备份当前 `.env` 和整个数据目录。
+3. 拉取新代码或导入新镜像。
+4. 保留原 `AUTOSIGN_MASTER_KEY` 和数据挂载，重新创建容器。
+5. 检查 `/healthz`、账户列表、计划、通知渠道及最近执行记录。
+6. 分别手动执行关键账户，再恢复自动计划。
+
+数据库迁移会在容器启动时自动执行。不要通过删除数据库或重新生成主密钥来解决升级问题。
 
 ## 本地开发
-
-要求 Python 3.11 或更高版本。
 
 ```powershell
 py -m venv .venv
@@ -168,38 +219,53 @@ Copy-Item .env.example .env
 .\.venv\Scripts\python.exe -m autosign
 ```
 
-运行质量检查：
+质量检查：
 
 ```powershell
 .\.venv\Scripts\python.exe -m ruff check .
 .\.venv\Scripts\python.exe -m pytest
 ```
 
-## 新增站点插件
+## 新增插件
 
-新插件应实现 `autosign.plugin_sdk.AutoSignPlugin` 契约，并放在 `src/autosign/plugins/`。建议保持以下边界：
+新插件应实现 `autosign.plugin_sdk.AutoSignPlugin`，并放在 `src/autosign/plugins/` 或通过 `autosign.plugins` entry point 发布。
 
-- 插件声明自身标识、显示名称、登录入口和所需秘密。
-- 登录检测、页面字段、站点 URL 与返回结果解析只写在插件内。
-- 通过执行上下文访问浏览器、加密秘密和结构化日志。
-- 为登录判断、成功、今日已签、失效和异常响应分别编写测试。
-- 不提交真实 Cookie、网页存档、账号名或目标站点返回的个人数据。
+插件应负责：
 
-## 目录结构
+- 插件标识、显示名称、版本、域名和登录入口
+- 登录状态判断与站点字段解析
+- 签到动作及成功、今日已签、失效、异常结果判定
+- 必要的站点兼容和结构化诊断摘要
+
+核心负责：
+
+- 账户、数据库、调度和重试
+- 浏览器会话与加密状态
+- 通知、日志和备份
+- 插件生命周期与稳定上下文接口
+
+每个插件至少应覆盖成功、今日已签、登录失效和页面异常测试。测试与 Issue 中不得包含真实账户、Cookie、Token 或个人页面内容。
+
+## 项目结构
 
 ```text
 src/autosign/
-├── core/          # 配置、数据库、调度、执行、通知、备份与安全
+├── core/          # 配置、数据库、调度、通知、备份、浏览器与安全
 ├── migrations/    # Alembic 数据库迁移
-├── plugin_sdk/    # 站点插件稳定契约
-├── plugins/       # 独立站点实现
-└── web/           # FastAPI、数据模型与前端资源
-tests/             # 单元与集成测试
+├── plugin_sdk/    # 插件契约
+├── plugins/       # 内置站点插件
+└── web/           # FastAPI、Schema 与前端资源
+tests/             # 单元和集成测试
 ```
 
-## 安全报告
+## 安全建议
 
-如果发现可能导致 Cookie、Token、主密钥或管理员会话泄露的问题，请不要在公开 Issue 中附带可用凭据。先撤销相关凭据并轮换主密钥或密码，再使用不含私人数据的最小复现描述问题。
+- 不要提交 `.env`、`data/`、数据库、备份、日志、浏览器状态或私人 Compose。
+- 不要将管理端口、VNC 端口或无认证代理暴露到公网。
+- 远程访问优先使用可信局域网、VPN 或 HTTPS 反向代理。
+- 启用 HTTPS 后设置 `AUTOSIGN_AUTH_SECURE_COOKIE=true`。
+- 凭据疑似泄露时，应立即撤销网站会话、轮换通知令牌并更换相关密码。
+- 安全问题请使用不含可用凭据的最小复现信息报告。
 
 ## 许可证
 
