@@ -35,7 +35,7 @@ class YamiboPlugin(AutoSignPlugin):
     manifest = PluginManifest(
         id="yamibo",
         name="百合会论坛",
-        version="0.2.0",
+        version="0.2.1",
         description="使用已保存的浏览器登录状态执行百合会每日打卡，并验证结果。",
         domains=["bbs.yamibo.com"],
         login_url="https://bbs.yamibo.com/",
@@ -67,7 +67,11 @@ class YamiboPlugin(AutoSignPlugin):
             )
 
         status = await browser.goto(self.SIGN_URL)
-        if status is not None and status >= 400:
+        # Baidu WAF can return an initial HTTP 405 JavaScript challenge and
+        # replace it with the real page shortly afterwards.  input_value waits
+        # briefly for the selector, which gives that challenge time to finish.
+        formhash = await browser.input_value(self.FORMHASH_SELECTOR)
+        if status is not None and status >= 400 and not formhash:
             return SignResult(
                 status=SignStatus.FAILED,
                 message=f"百合会签到页面返回 HTTP {status}。",
@@ -75,7 +79,6 @@ class YamiboPlugin(AutoSignPlugin):
                 details={"http_status": status},
             )
 
-        formhash = await browser.input_value(self.FORMHASH_SELECTOR)
         if not formhash:
             body = await browser.body_text()
             if "登录" in body or "成为会员" in body:

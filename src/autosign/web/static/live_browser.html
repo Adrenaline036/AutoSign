@@ -1,0 +1,71 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AutoSign 实时登录浏览器</title>
+    <link rel="icon" href="data:,">
+    <style>
+      :root { color-scheme: dark; font-family: Inter, "Microsoft YaHei", system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; height: 100vh; overflow: hidden; background: #050a13; color: #e8eef8; }
+      header { height: 48px; display: flex; align-items: center; gap: 12px; padding: 0 14px;
+        background: #101c30; border-bottom: 1px solid #31496d; }
+      #status { flex: 1; color: #9eb0ca; overflow: hidden; text-overflow: ellipsis;
+        white-space: nowrap; }
+      button { border: 0; border-radius: 9px; padding: 8px 13px; background: #2a405f;
+        color: white; font: inherit; font-weight: 700; cursor: pointer; }
+      #screen { width: 100%; height: calc(100vh - 48px); background: #050a13; overflow: hidden; }
+      #screen canvas { outline: none; }
+      .ok { color: #71e4ad !important; }
+      .error { color: #ffabb5 !important; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>AutoSign 实时登录浏览器</strong>
+      <span id="status">正在连接 NAS 内的 Chromium…</span>
+      <button id="close" type="button">完成操作，关闭本页</button>
+    </header>
+    <div id="screen" tabindex="0" aria-label="NAS 内实时 Chromium 画面"></div>
+    <script type="module">
+      import RFB from "/novnc/core/rfb.js";
+
+      const status = document.querySelector("#status");
+      const screen = document.querySelector("#screen");
+      const sessionId = location.pathname.split("/").filter(Boolean).at(-2);
+      const websocketProtocol = location.protocol === "https:" ? "wss:" : "ws:";
+      const websocketUrl = `${websocketProtocol}//${location.host}` +
+        `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/vnc`;
+
+      const rfb = new RFB(screen, websocketUrl, {shared: true});
+      rfb.scaleViewport = true;
+      rfb.resizeSession = false;
+      rfb.viewOnly = false;
+      rfb.focusOnClick = true;
+      rfb.clipViewport = false;
+
+      rfb.addEventListener("connect", () => {
+        status.textContent = "已连接。请在此完成登录和安全验证，完成后关闭本页。";
+        status.className = "ok";
+        screen.focus();
+      });
+      rfb.addEventListener("disconnect", (event) => {
+        if (event.detail.clean) {
+          status.textContent = "实时浏览器连接已关闭，可以返回 AutoSign。";
+          status.className = "";
+        } else {
+          status.textContent = "实时浏览器连接中断，请返回 AutoSign 后重新打开。";
+          status.className = "error";
+        }
+      });
+      rfb.addEventListener("credentialsrequired", () => {
+        status.textContent = "实时浏览器服务配置异常：不应要求额外 VNC 密码。";
+        status.className = "error";
+      });
+
+      document.querySelector("#close").addEventListener("click", () => window.close());
+      window.addEventListener("beforeunload", () => rfb.disconnect());
+    </script>
+  </body>
+</html>

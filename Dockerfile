@@ -1,3 +1,9 @@
+FROM python:3.11-slim AS novnc-assets
+
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends novnc \
+    && rm -rf /var/lib/apt/lists/*
+
 FROM python:3.11-slim
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -11,8 +17,10 @@ WORKDIR /app
 RUN pip install --no-cache-dir "playwright>=1.55,<2"
 RUN python -m playwright install --with-deps chromium
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends xauth \
+    && apt-get install -y --no-install-recommends x11vnc xauth \
     && rm -rf /var/lib/apt/lists/*
+COPY --from=novnc-assets /usr/share/novnc /usr/share/novnc
+COPY --from=novnc-assets /usr/share/doc/novnc /usr/share/doc/novnc
 RUN chmod -R a+rX /ms-playwright
 
 COPY pyproject.toml ./
@@ -25,7 +33,8 @@ RUN --mount=type=cache,target=/root/.cache/pip \
       "pydantic-settings>=2.10,<3" \
       "sqlalchemy>=2.0,<3" \
       "tzdata>=2025.2" \
-      "uvicorn>=0.35,<1"
+      "uvicorn>=0.35,<1" \
+      "websockets>=15,<17"
 
 COPY README.md ./
 COPY src ./src

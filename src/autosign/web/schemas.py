@@ -54,6 +54,7 @@ class BrowserSessionRead(BaseModel):
     last_activity: datetime
     viewport_width: int
     viewport_height: int
+    live_url: str | None = None
 
 
 class BrowserClick(BaseModel):

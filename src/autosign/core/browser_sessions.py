@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
@@ -13,6 +14,7 @@ from playwright.async_api import Browser, BrowserContext, Page, Playwright, asyn
 from autosign.plugin_sdk import BrowserResponse
 
 BROWSER_STATE_SECRET = "browser_storage_state"
+SESSION_STORAGE_STATE_KEY = "_autosign_session_storage"
 VIEWPORT_WIDTH = 1280
 VIEWPORT_HEIGHT = 800
 ALLOWED_KEYS = {
@@ -30,6 +32,22 @@ ALLOWED_KEYS = {
     "PageUp",
     "PageDown",
 }
+PASSWORD_FORM_GUARD_SCRIPT = r"""
+(() => {
+  window.addEventListener("submit", (event) => {
+    const form = event.target;
+    if (!(form instanceof HTMLFormElement)) return;
+    const method = (form.getAttribute("method") || "get").toLowerCase();
+    if (method !== "get") return;
+    if (!form.querySelector('input[type="password"]')) return;
+    event.preventDefault();
+    console.error(
+      "AutoSign blocked an unsafe native GET password submission because " +
+      "the page login script may not be ready."
+    );
+  }, true);
+})();
+"""
 
 
 class BrowserSessionNotFoundError(LookupError):
@@ -38,6 +56,122 @@ class BrowserSessionNotFoundError(LookupError):
 
 class BrowserSessionInputError(ValueError):
     pass
+
+
+class BrowserStorageStateError(RuntimeError):
+    pass
+
+
+FALSEY_INDEXEDDB_KEYS_SCRIPT = r"""
+async () => {
+  const databases = [];
+  for (const databaseInfo of await indexedDB.databases()) {
+    if (!databaseInfo.name) continue;
+    const database = await new Promise((resolve, reject) => {
+      const request = indexedDB.open(databaseInfo.name);
+      request.addEventListener("success", () => resolve(request.result));
+      request.addEventListener("error", () => reject(request.error));
+    });
+    const stores = [];
+    if (database.objectStoreNames.length) {
+      const transaction = database.transaction(database.objectStoreNames, "readonly");
+      for (const storeName of database.objectStoreNames) {
+        const objectStore = transaction.objectStore(storeName);
+        if (objectStore.keyPath !== null) continue;
+        const keys = await new Promise((resolve, reject) => {
+          const request = objectStore.getAllKeys();
+          request.addEventListener("success", () => resolve(request.result));
+          request.addEventListener("error", () => reject(request.error));
+        });
+        const records = [];
+        keys.forEach((key, index) => {
+          if (key === 0 || key === "") records.push({index, key});
+        });
+        if (records.length) stores.push({name: storeName, records});
+      }
+    }
+    database.close();
+    if (stores.length) databases.push({name: databaseInfo.name, stores});
+  }
+  return {origin: location.origin, databases};
+}
+"""
+SESSION_STORAGE_CAPTURE_SCRIPT = r"""
+() => ({origin: location.origin, entries: Object.entries(sessionStorage)})
+"""
+
+
+def normalize_storage_state(state: dict) -> tuple[dict, int]:
+    """Repair Playwright 1.55 exports that omit falsey out-of-line IDB keys."""
+    repaired = 0
+    for origin in state.get("origins", []):
+        for database in origin.get("indexedDB", []):
+            for store in database.get("stores", []):
+                if store.get("keyPath") is not None or store.get("keyPathArray") is not None:
+                    continue
+                if store.get("autoIncrement"):
+                    continue
+                missing = [
+                    record
+                    for record in store.get("records", [])
+                    if record.get("key") is None and record.get("keyEncoded") is None
+                ]
+                # IndexedDB keys cannot be false/null/undefined. Of the primitive
+                # keys Playwright treats as falsey, only numeric 0 and "" are valid.
+                # getAllKeys() sorts numbers before strings, matching record order.
+                for record, fallback_key in zip(missing, (0, ""), strict=False):
+                    record["key"] = fallback_key
+                    repaired += 1
+                if len(missing) > 2:
+                    invalid_ids = {id(record) for record in missing[2:]}
+                    store["records"] = [
+                        record
+                        for record in store.get("records", [])
+                        if id(record) not in invalid_ids
+                    ]
+    return state, repaired
+
+
+def unpack_storage_state(state: dict) -> tuple[dict, list[dict]]:
+    """Separate AutoSign extensions before passing state to Playwright."""
+    session_storage = state.pop(SESSION_STORAGE_STATE_KEY, [])
+    if not isinstance(session_storage, list):
+        session_storage = []
+    state, _ = normalize_storage_state(state)
+    return state, session_storage
+
+
+def session_storage_restore_script(session_storage: list[dict]) -> str | None:
+    storage_by_origin: dict[str, dict[str, str]] = {}
+    for item in session_storage:
+        if not isinstance(item, dict):
+            continue
+        origin = item.get("origin")
+        entries = item.get("entries")
+        if not isinstance(origin, str) or not isinstance(entries, list):
+            continue
+        valid_entries: dict[str, str] = {}
+        for entry in entries:
+            if (
+                isinstance(entry, list)
+                and len(entry) == 2
+                and all(isinstance(value, str) for value in entry)
+            ):
+                valid_entries[entry[0]] = entry[1]
+        storage_by_origin[origin] = valid_entries
+    if not storage_by_origin:
+        return None
+    encoded = json.dumps(storage_by_origin, ensure_ascii=False, separators=(",", ":"))
+    return f"""
+(() => {{
+  const storageByOrigin = {encoded};
+  const values = storageByOrigin[location.origin];
+  if (!values) return;
+  for (const [key, value] of Object.entries(values)) {{
+    sessionStorage.setItem(key, value);
+  }}
+}})();
+"""
 
 
 @dataclass(frozen=True, slots=True)
@@ -74,6 +208,41 @@ class PlaywrightAutomationClient:
 
     async def html_content(self) -> str:
         return await self.page.content()
+
+    async def click(self, selector: str) -> bool:
+        try:
+            locator = self.page.locator(selector)
+            for index in range(await locator.count()):
+                candidate = locator.nth(index)
+                if not await candidate.is_visible():
+                    continue
+                try:
+                    await candidate.click(timeout=1_200)
+                except Exception:
+                    try:
+                        clicked = await candidate.evaluate(
+                            """element => {
+                                const clickable = element.closest(
+                                    'button, [role="button"], a, [onclick], ' +
+                                    'input[type="button"], input[type="submit"]'
+                                ) || element;
+                                if (clickable.disabled) return false;
+                                if (clickable.getAttribute('aria-disabled') === 'true') {
+                                    return false;
+                                }
+                                clickable.scrollIntoView({block: 'center'});
+                                clickable.click();
+                                return true;
+                            }"""
+                        )
+                    except Exception:
+                        continue
+                    if not clicked:
+                        continue
+                return True
+        except Exception:
+            return False
+        return False
 
     async def post_form(
         self,
@@ -126,9 +295,30 @@ class BrowserSessionInfo:
 
 
 class BrowserSessionManager:
-    def __init__(self, timeout_seconds: int = 900, *, headless: bool = True) -> None:
+    def __init__(
+        self,
+        timeout_seconds: int = 900,
+        *,
+        headless: bool = True,
+        hide_window: bool = False,
+        proxy_server: str | None = None,
+        proxy_bypass: str | None = None,
+    ) -> None:
         self._timeout = timedelta(seconds=timeout_seconds)
         self._headless = headless
+        self._launch_args = ["--disable-dev-shm-usage"]
+        if hide_window:
+            self._launch_args.extend(
+                [
+                    "--window-position=-32000,-32000",
+                    f"--window-size={VIEWPORT_WIDTH},{VIEWPORT_HEIGHT}",
+                ]
+            )
+        self._proxy: dict[str, str] | None = None
+        if proxy_server:
+            self._proxy = {"server": proxy_server}
+            if proxy_bypass:
+                self._proxy["bypass"] = proxy_bypass
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
         self._sessions: dict[str, ActiveBrowserSession] = {}
@@ -142,7 +332,7 @@ class BrowserSessionManager:
             self._playwright = await async_playwright().start()
             self._browser = await self._playwright.chromium.launch(
                 headless=self._headless,
-                args=["--disable-dev-shm-usage"],
+                args=self._launch_args,
             )
         return self._browser
 
@@ -159,7 +349,12 @@ class BrowserSessionManager:
             if existing_id is not None:
                 await self._close_locked(existing_id, save_state=False)
 
-            storage_state = json.loads(storage_state_json) if storage_state_json else None
+            storage_state = None
+            session_storage: list[dict] = []
+            if storage_state_json:
+                storage_state, session_storage = unpack_storage_state(
+                    json.loads(storage_state_json)
+                )
             for attempt in range(2):
                 browser = await self._ensure_browser()
                 context: BrowserContext | None = None
@@ -169,7 +364,12 @@ class BrowserSessionManager:
                         viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
                         locale="zh-CN",
                         timezone_id="Asia/Shanghai",
+                        proxy=self._proxy,
                     )
+                    restore_script = session_storage_restore_script(session_storage)
+                    if restore_script is not None:
+                        await context.add_init_script(script=restore_script)
+                    await context.add_init_script(script=PASSWORD_FORM_GUARD_SCRIPT)
                     page = await context.new_page()
                     await page.goto(login_url, wait_until="commit", timeout=45_000)
                     try:
@@ -184,6 +384,17 @@ class BrowserSessionManager:
                     if attempt == 0 and self._is_target_closed_error(exc):
                         await self._reset_browser_locked()
                         continue
+                    if (
+                        attempt == 0
+                        and storage_state is not None
+                        and self._is_storage_state_error(exc)
+                    ):
+                        # Keep the encrypted state untouched, but allow the user to
+                        # open a clean interactive browser and replace it by logging
+                        # in again instead of trapping the account behind HTTP 502.
+                        storage_state = None
+                        session_storage = []
+                        continue
                     raise
 
             now = datetime.now(UTC)
@@ -195,6 +406,8 @@ class BrowserSessionManager:
                 created_at=now,
                 last_activity=now,
             )
+            self._bind_page_lifecycle(session, page)
+            context.on("page", lambda opened_page: self._activate_page(session, opened_page))
             self._sessions[session.id] = session
             self._account_sessions[account_id] = session.id
             return await self._info(session)
@@ -209,15 +422,44 @@ class BrowserSessionManager:
                 await self._translate_target_closed(session, exc)
                 raise
 
-    async def screenshot(self, session_id: str) -> bytes:
+    async def focus(self, session_id: str) -> None:
         session = await self._get(session_id)
         async with session.operation_lock:
             self._touch(session)
             try:
-                return await session.page.screenshot(type="png")
+                await session.page.bring_to_front()
             except Exception as exc:
                 await self._translate_target_closed(session, exc)
                 raise
+
+    async def screenshot(self, session_id: str) -> bytes:
+        session = await self._get(session_id)
+        async with session.operation_lock:
+            self._touch(session)
+            cdp_session = None
+            try:
+                # Playwright's high-level screenshot API waits for every web font
+                # to finish loading.  A blocked third-party font can therefore
+                # freeze the remote browser GUI for 30 seconds even though the page
+                # itself is already interactive. Chromium's capture command takes
+                # the current viewport immediately and does not wait for fonts.
+                cdp_session = await session.context.new_cdp_session(session.page)
+                result = await cdp_session.send(
+                    "Page.captureScreenshot",
+                    {
+                        "format": "png",
+                        "fromSurface": True,
+                        "captureBeyondViewport": False,
+                    },
+                )
+                return base64.b64decode(result["data"])
+            except Exception as exc:
+                await self._translate_target_closed(session, exc)
+                raise
+            finally:
+                if cdp_session is not None:
+                    with suppress(Exception):
+                        await cdp_session.detach()
 
     async def click(self, session_id: str, *, x: float, y: float) -> None:
         if not 0 <= x <= VIEWPORT_WIDTH or not 0 <= y <= VIEWPORT_HEIGHT:
@@ -296,12 +538,28 @@ class BrowserSessionManager:
         storage_state_json: str,
     ) -> AsyncIterator[PlaywrightAutomationClient]:
         browser = await self._ensure_browser()
-        context = await browser.new_context(
-            storage_state=json.loads(storage_state_json),
-            viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
-            locale="zh-CN",
-            timezone_id="Asia/Shanghai",
+        storage_state, session_storage = unpack_storage_state(
+            json.loads(storage_state_json)
         )
+        try:
+            context = await browser.new_context(
+                storage_state=storage_state,
+                viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                proxy=self._proxy,
+            )
+        except Exception as exc:
+            if self._is_storage_state_error(exc):
+                raise BrowserStorageStateError(
+                    "Saved browser login state cannot be restored. "
+                    "Open interactive login and save the account again."
+                ) from exc
+            raise
+        restore_script = session_storage_restore_script(session_storage)
+        if restore_script is not None:
+            await context.add_init_script(script=restore_script)
+        await context.add_init_script(script=PASSWORD_FORM_GUARD_SCRIPT)
         page = await context.new_page()
         try:
             yield PlaywrightAutomationClient(page)
@@ -340,7 +598,18 @@ class BrowserSessionManager:
         async with session.operation_lock:
             try:
                 if save_state:
-                    state = await session.context.storage_state()
+                    falsey_keys = await self._collect_falsey_indexeddb_keys(session)
+                    session_storage = await self._collect_session_storage(session)
+                    # Some modern applications keep their authentication token in
+                    # IndexedDB instead of cookies or localStorage.  Preserve it as
+                    # part of the same encrypted browser state so a later automation
+                    # context can restore the complete login session.
+                    state = await session.context.storage_state(indexed_db=True)
+                    self._apply_falsey_indexeddb_keys(state, falsey_keys)
+                    state, _ = normalize_storage_state(state)
+                    if session_storage:
+                        state[SESSION_STORAGE_STATE_KEY] = session_storage
+                    await self._validate_storage_state(state)
                     state_json = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
             except Exception as exc:
                 if self._is_target_closed_error(exc):
@@ -364,6 +633,116 @@ class BrowserSessionManager:
         for session_id in expired:
             await self._close_locked(session_id, save_state=False)
 
+    async def _collect_falsey_indexeddb_keys(
+        self,
+        session: ActiveBrowserSession,
+    ) -> list[dict]:
+        results: list[dict] = []
+        seen_origins: set[str] = set()
+        for page in session.context.pages:
+            if page.is_closed():
+                continue
+            try:
+                result = await asyncio.wait_for(
+                    page.evaluate(FALSEY_INDEXEDDB_KEYS_SCRIPT),
+                    timeout=5,
+                )
+            except Exception:
+                continue
+            origin = result.get("origin") if isinstance(result, dict) else None
+            if not isinstance(origin, str) or origin in seen_origins:
+                continue
+            seen_origins.add(origin)
+            results.append(result)
+        return results
+
+    async def _collect_session_storage(
+        self,
+        session: ActiveBrowserSession,
+    ) -> list[dict]:
+        results: list[dict] = []
+        seen_origins: set[str] = set()
+        other_pages = [
+            page for page in session.context.pages if page is not session.page
+        ]
+        pages = [session.page, *other_pages]
+        for page in pages:
+            if page.is_closed():
+                continue
+            try:
+                result = await asyncio.wait_for(
+                    page.evaluate(SESSION_STORAGE_CAPTURE_SCRIPT),
+                    timeout=5,
+                )
+            except Exception:
+                continue
+            origin = result.get("origin") if isinstance(result, dict) else None
+            entries = result.get("entries") if isinstance(result, dict) else None
+            if (
+                not isinstance(origin, str)
+                or origin in seen_origins
+                or not isinstance(entries, list)
+                or not entries
+            ):
+                continue
+            seen_origins.add(origin)
+            results.append({"origin": origin, "entries": entries})
+        return results
+
+    @staticmethod
+    def _apply_falsey_indexeddb_keys(state: dict, key_maps: list[dict]) -> None:
+        origins = {origin.get("origin"): origin for origin in state.get("origins", [])}
+        for key_map in key_maps:
+            origin = origins.get(key_map.get("origin"))
+            if origin is None:
+                continue
+            databases = {
+                database.get("name"): database
+                for database in origin.get("indexedDB", [])
+            }
+            for database_map in key_map.get("databases", []):
+                database = databases.get(database_map.get("name"))
+                if database is None:
+                    continue
+                stores = {
+                    store.get("name"): store
+                    for store in database.get("stores", [])
+                }
+                for store_map in database_map.get("stores", []):
+                    store = stores.get(store_map.get("name"))
+                    if store is None:
+                        continue
+                    records = store.get("records", [])
+                    for record_map in store_map.get("records", []):
+                        index = record_map.get("index")
+                        if isinstance(index, int) and 0 <= index < len(records):
+                            records[index]["key"] = record_map.get("key")
+
+    async def _validate_storage_state(self, state: dict) -> None:
+        browser = await self._ensure_browser()
+        context: BrowserContext | None = None
+        playwright_state, session_storage = unpack_storage_state(dict(state))
+        try:
+            context = await browser.new_context(
+                storage_state=playwright_state,
+                viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+                locale="zh-CN",
+                timezone_id="Asia/Shanghai",
+                proxy=self._proxy,
+            )
+            restore_script = session_storage_restore_script(session_storage)
+            if restore_script is not None:
+                await context.add_init_script(script=restore_script)
+        except Exception as exc:
+            raise BrowserStorageStateError(
+                "The captured browser login state could not be restored safely. "
+                "Reopen interactive login and save the account again."
+            ) from exc
+        finally:
+            if context is not None:
+                with suppress(Exception):
+                    await context.close()
+
     async def _info(self, session: ActiveBrowserSession) -> BrowserSessionInfo:
         return BrowserSessionInfo(
             id=session.id,
@@ -377,6 +756,24 @@ class BrowserSessionManager:
     @staticmethod
     def _touch(session: ActiveBrowserSession) -> None:
         session.last_activity = datetime.now(UTC)
+
+    def _activate_page(self, session: ActiveBrowserSession, page: Page) -> None:
+        if page.is_closed() or session.id not in self._sessions:
+            return
+        session.page = page
+        self._touch(session)
+        self._bind_page_lifecycle(session, page)
+
+    def _bind_page_lifecycle(self, session: ActiveBrowserSession, page: Page) -> None:
+        page.on("close", lambda: self._restore_page_after_close(session, page))
+
+    def _restore_page_after_close(self, session: ActiveBrowserSession, closed_page: Page) -> None:
+        if session.id not in self._sessions or session.page is not closed_page:
+            return
+        remaining_pages = [page for page in session.context.pages if not page.is_closed()]
+        if remaining_pages:
+            session.page = remaining_pages[-1]
+            self._touch(session)
 
     def _discard_session(self, session: ActiveBrowserSession) -> None:
         self._sessions.pop(session.id, None)
@@ -416,3 +813,8 @@ class BrowserSessionManager:
         return type(exc).__name__ == "TargetClosedError" or (
             "target page, context or browser has been closed" in str(exc).lower()
         )
+
+    @staticmethod
+    def _is_storage_state_error(exc: Exception) -> bool:
+        message = str(exc).lower()
+        return "error setting storage state" in message or "unable to restore indexeddb" in message

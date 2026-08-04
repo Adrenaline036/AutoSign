@@ -1,6 +1,6 @@
 services:
   autosign:
-    image: autosign-local:0.13.1
+    image: autosign-local:0.15.0
     pull_policy: never
     container_name: autosign
     restart: unless-stopped
@@ -12,6 +12,7 @@ services:
       AUTOSIGN_DATA_DIR: /data
       AUTOSIGN_LOG_LEVEL: INFO
       AUTOSIGN_BROWSER_HEADLESS: "false"
+      AUTOSIGN_BROWSER_LIVE_ENABLED: "true"
       AUTOSIGN_SCHEDULER_POLL_SECONDS: "15"
       AUTOSIGN_BACKUP_ENABLED: ${AUTOSIGN_BACKUP_ENABLED:-false}
       AUTOSIGN_BACKUP_DAILY_TIME: ${AUTOSIGN_BACKUP_DAILY_TIME:-03:30}
@@ -28,5 +29,5 @@ services:
     security_opt:
       - no-new-privileges:true
     pids_limit: 512
-    mem_limit: 1536m
+    mem_limit: 15g
     cpus: 2.0

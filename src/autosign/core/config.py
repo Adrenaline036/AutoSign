@@ -22,6 +22,13 @@ class Settings(BaseSettings):
     master_key: SecretStr | None = None
     browser_session_timeout_seconds: int = 900
     browser_headless: bool = True
+    browser_hide_window: bool = False
+    browser_proxy_server: SecretStr | None = None
+    browser_proxy_bypass: str | None = None
+    browser_live_enabled: bool = False
+    browser_vnc_host: str = "127.0.0.1"
+    browser_vnc_port: int = 5900
+    browser_novnc_root: Path = Path("/usr/share/novnc")
     auth_session_hours: int = 12
     auth_secure_cookie: bool = False
     auth_disabled: bool = False

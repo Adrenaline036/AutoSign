@@ -3,8 +3,10 @@ from __future__ import annotations
 import sqlite3
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
+from starlette.websockets import WebSocketDisconnect
 
 from autosign.core.auth import PASSWORD_HASH_KEY
 from autosign.core.config import Settings
@@ -101,3 +103,23 @@ def test_setup_cannot_replace_existing_password(tmp_path: Path) -> None:
             json={"password": "another secure administrator password"},
         )
         assert repeated.status_code == 409
+
+
+def test_live_browser_assets_and_websocket_require_admin_session(tmp_path: Path) -> None:
+    novnc_root = tmp_path / "novnc"
+    (novnc_root / "core").mkdir(parents=True)
+    (novnc_root / "core" / "rfb.js").write_text("export default class RFB {}")
+    settings = auth_settings(tmp_path / "data")
+    settings.browser_live_enabled = True
+    settings.browser_novnc_root = novnc_root
+
+    with TestClient(create_app(settings)) as client:
+        assert client.get("/novnc/core/rfb.js").status_code == 401
+        with pytest.raises(WebSocketDisconnect) as disconnected:
+            with client.websocket_connect(
+                "/api/v1/browser-sessions/unknown/vnc",
+                headers={"origin": "http://testserver"},
+                subprotocols=["binary"],
+            ):
+                pass
+        assert disconnected.value.code == 4401

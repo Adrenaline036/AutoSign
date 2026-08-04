@@ -24,4 +24,15 @@ while [ ! -S /tmp/.X11-unix/X99 ]; do
     sleep 0.1
 done
 
+# The VNC server is reachable only from inside this container. AutoSign exposes
+# it through its authenticated WebSocket bridge, so no raw VNC port or separate
+# VNC password is exposed to the LAN.
+x11vnc -display :99 -rfbport 5900 -localhost -forever -shared -nopw \
+    -noxdamage -quiet >/tmp/autosign-x11vnc.log 2>&1 &
+x11vnc_pid=$!
+if ! kill -0 "$x11vnc_pid" 2>/dev/null; then
+    wait "$x11vnc_pid"
+    exit 1
+fi
+
 exec python -m autosign

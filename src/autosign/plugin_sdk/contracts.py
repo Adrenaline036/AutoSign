@@ -101,6 +101,10 @@ class BrowserAutomation(Protocol):
     async def html_content(self) -> str:
         ...
 
+    async def click(self, selector: str) -> bool:
+        """Click one plugin-owned selector and report whether it was actionable."""
+        ...
+
     async def post_form(
         self,
         url: str,

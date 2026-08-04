@@ -1,3 +1,3 @@
 """AutoSign application package."""
 
-__version__ = "0.13.1"
+__version__ = "0.15.0"

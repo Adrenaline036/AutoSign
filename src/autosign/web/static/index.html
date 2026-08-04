@@ -166,7 +166,14 @@
       .confirmation-name { display: block; margin-top: 7px; color: #f0c2ca;
         font-weight: 700; overflow-wrap: anywhere; }
       .browser-dialog { width: min(1180px, calc(100% - 24px)); max-width: none; }
+      .browser-dialog.live-mode { width: min(660px, calc(100% - 24px)); }
       .browser-modal-body { padding-top: 10px; }
+      .browser-live-panel { display: grid; gap: 14px; padding: 22px;
+        border: 1px solid #315277; border-radius: 14px;
+        background: linear-gradient(145deg, #10243c, #0a1628); }
+      .browser-live-panel[hidden] { display: none; }
+      .browser-live-panel h3, .browser-live-panel p { margin: 0; }
+      .browser-live-panel .login-action { justify-self: start; }
       .browser-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
         padding: 10px 12px; border: 1px solid #2a4060; border-radius: 12px;
         background: #0a1425; }
@@ -505,6 +512,14 @@
           <span id="browser-location" class="browser-location"></span>
           <button id="browser-refresh" class="secondary" type="button">刷新画面</button>
         </div>
+        <div id="browser-live-panel" class="browser-live-panel" hidden>
+          <h3>实时浏览器已在独立标签中打开</h3>
+          <p class="muted">请在新标签中直接完成登录和网站安全验证。完成后关闭该标签，
+            回到这里点击“登录完成，检测并保存”。</p>
+          <button id="browser-live-open" class="login-action" type="button">
+            打开或重新打开实时浏览器
+          </button>
+        </div>
         <div id="browser-stage" class="browser-stage" tabindex="-1"
           role="application" aria-label="目标网站浏览器">
           <img id="browser-screenshot" alt="远程浏览器画面" draggable="false">
@@ -514,7 +529,7 @@
           <div id="browser-loading" class="browser-loading">正在加载 Chromium 登录画面…</div>
           <div class="browser-focus-hint">点击网站中的输入框，然后直接使用键盘</div>
         </div>
-        <p class="muted browser-help">这是插件指定的真实登录页面。点击网站中的输入框后，
+        <p id="browser-help" class="muted browser-help">这是插件指定的真实登录页面。点击网站中的输入框后，
           可直接输入、粘贴并使用 Tab、Enter、退格和方向键。输入内容只送到当前临时
           浏览器，不写入日志；检测到登录成功后才会加密保存 Cookie 和 localStorage。</p>
         <div class="modal-actions">
@@ -614,6 +629,10 @@
       const browserPageTitle = document.querySelector("#browser-page-title");
       const browserLocation = document.querySelector("#browser-location");
       const browserStage = document.querySelector("#browser-stage");
+      const browserLivePanel = document.querySelector("#browser-live-panel");
+      const browserLiveOpen = document.querySelector("#browser-live-open");
+      const browserRefresh = document.querySelector("#browser-refresh");
+      const browserHelp = document.querySelector("#browser-help");
       const browserScreenshot = document.querySelector("#browser-screenshot");
       const browserKeyboardCapture = document.querySelector("#browser-keyboard-capture");
       const browserLoading = document.querySelector("#browser-loading");
@@ -631,6 +650,8 @@
       let browserInputQueue = Promise.resolve();
       let browserFrameRequestActive = false;
       let browserFrameObjectUrl = null;
+      let browserLiveMode = false;
+      let activeBrowserWindow = null;
 
       function showNotice(message, error = false) {
         notice.textContent = message;
@@ -740,6 +761,25 @@
         browserPollTimer = window.setTimeout(refreshBrowserFrame, delay);
       }
 
+      function openLiveBrowserWindow() {
+        if (!activeBrowserSession?.live_url) return null;
+        activeBrowserWindow = window.open(activeBrowserSession.live_url, "_blank");
+        if (!activeBrowserWindow) {
+          showNotice("浏览器阻止了新标签，请允许此站点打开弹出窗口后重试", true);
+        }
+        return activeBrowserWindow;
+      }
+
+      async function refreshLiveBrowserInfo() {
+        if (!activeBrowserSession || !browserLiveMode) return;
+        try {
+          await refreshBrowserInfo();
+        } catch (error) {
+          if (handleBrowserSessionError(error)) return;
+        }
+        scheduleBrowserRefresh(2000);
+      }
+
       function handleBrowserSessionError(error) {
         showNotice(error.message, true);
         if (error.status !== 404) return false;
@@ -759,6 +799,10 @@
 
       async function refreshBrowserFrame() {
         if (!activeBrowserSession || browserFrameRequestActive) return;
+        if (browserLiveMode) {
+          await refreshLiveBrowserInfo();
+          return;
+        }
         const sessionId = activeBrowserSession.id;
         browserFrameRequestActive = true;
         try {
@@ -805,12 +849,18 @@
       }
 
       async function openBrowserLogin(account) {
+        const pendingWindow = window.open("about:blank", "_blank");
         browserDialogAccount.textContent = `账户：${account.label}`;
         browserPageTitle.textContent = "正在启动浏览器…";
         browserLocation.textContent = "";
         browserLoading.hidden = false;
         browserScreenshot.removeAttribute("src");
         browserKeyboardCapture.value = "";
+        browserLiveMode = false;
+        browserDialog.classList.remove("live-mode");
+        browserLivePanel.hidden = true;
+        browserStage.hidden = false;
+        browserRefresh.hidden = false;
         browserDialog.showModal();
         try {
           activeBrowserSession = await api(
@@ -819,8 +869,28 @@
           );
           browserPageTitle.textContent = activeBrowserSession.title;
           browserLocation.textContent = activeBrowserSession.url;
-          refreshBrowserFrame();
+          if (activeBrowserSession.live_url) {
+            browserLiveMode = true;
+            browserDialog.classList.add("live-mode");
+            browserLivePanel.hidden = false;
+            browserStage.hidden = true;
+            browserRefresh.hidden = true;
+            browserHelp.textContent =
+              "实时画面来自 NAS 内的同一个 Chromium。完成登录后回到此处保存，" +
+              "Cookie、localStorage 和 IndexedDB 将使用主密钥加密。";
+            activeBrowserWindow = pendingWindow;
+            if (pendingWindow) {
+              pendingWindow.location.replace(activeBrowserSession.live_url);
+            } else {
+              showNotice("浏览器阻止了新标签，请点击“打开实时浏览器”", true);
+            }
+            refreshLiveBrowserInfo();
+          } else {
+            if (pendingWindow) pendingWindow.close();
+            refreshBrowserFrame();
+          }
         } catch (error) {
+          if (pendingWindow) pendingWindow.close();
           showNotice(error.message, true);
           browserDialog.close();
         }
@@ -839,6 +909,8 @@
             });
           }
           activeBrowserSession = null;
+          if (activeBrowserWindow && !activeBrowserWindow.closed) activeBrowserWindow.close();
+          activeBrowserWindow = null;
           browserDialog.close();
           await loadAccounts();
           if (!saveState) {
@@ -1557,7 +1629,8 @@
         );
       });
 
-      document.querySelector("#browser-refresh").addEventListener("click", refreshBrowserFrame);
+      browserRefresh.addEventListener("click", refreshBrowserFrame);
+      browserLiveOpen.addEventListener("click", openLiveBrowserWindow);
       browserSave.addEventListener("click", () => closeBrowserLogin(true));
       browserDiscard.addEventListener("click", () => closeBrowserLogin(false));
       document.querySelector("#browser-dialog-close").addEventListener("click", () => {
@@ -1574,6 +1647,14 @@
         browserKeyboardCapture.value = "";
         browserLoading.hidden = false;
         browserScreenshot.removeAttribute("src");
+        browserLiveMode = false;
+        browserDialog.classList.remove("live-mode");
+        browserLivePanel.hidden = true;
+        browserStage.hidden = false;
+        browserRefresh.hidden = false;
+        browserHelp.textContent = "这是插件指定的真实登录页面。点击网站中的输入框后，" +
+          "可直接输入、粘贴并使用 Tab、Enter、退格和方向键。输入内容只送到当前临时" +
+          "浏览器，不写入日志；检测到登录成功后才会加密保存浏览器状态。";
         if (browserFrameObjectUrl) {
           URL.revokeObjectURL(browserFrameObjectUrl);
           browserFrameObjectUrl = null;
