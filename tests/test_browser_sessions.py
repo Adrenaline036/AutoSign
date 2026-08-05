@@ -1,8 +1,9 @@
 from __future__ import annotations
 
+import asyncio
 import base64
 import json
-from datetime import UTC, datetime
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -16,6 +17,7 @@ from autosign.core.browser_sessions import (
     SESSION_STORAGE_STATE_KEY,
     VIEWPORT_HEIGHT,
     VIEWPORT_WIDTH,
+    BrowserSessionCleanupCoordinator,
     BrowserSessionInfo,
     BrowserSessionManager,
     BrowserSessionNotFoundError,
@@ -551,6 +553,43 @@ async def test_browser_manager_lifecycle_and_input() -> None:
     assert fake_browser.contexts[0].closed is True
     with pytest.raises(BrowserSessionNotFoundError):
         await manager.get_info(info.id)
+
+
+@pytest.mark.asyncio
+async def test_browser_manager_closes_idle_session_without_new_request() -> None:
+    manager = BrowserSessionManager(timeout_seconds=10)
+    fake_browser = FakeBrowser()
+    manager._browser = fake_browser
+    info = await manager.start(
+        account_id="account-expired",
+        login_url="https://example.test/login",
+    )
+    manager._sessions[info.id].last_activity = datetime.now(UTC) - timedelta(seconds=11)
+
+    assert await manager.cleanup_expired() == 1
+    assert fake_browser.contexts[0].closed is True
+    assert info.id not in manager._sessions
+    assert "account-expired" not in manager._account_sessions
+    assert await manager.cleanup_expired() == 0
+
+
+@pytest.mark.asyncio
+async def test_browser_cleanup_coordinator_runs_and_stops() -> None:
+    class CleanupManager:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def cleanup_expired(self) -> int:
+            self.calls += 1
+            return 1 if self.calls == 1 else 0
+
+    manager = CleanupManager()
+    coordinator = BrowserSessionCleanupCoordinator(manager, poll_seconds=0.01)  # type: ignore[arg-type]
+    coordinator.start()
+    await asyncio.sleep(0.025)
+    await coordinator.stop()
+
+    assert manager.calls >= 2
 
 
 @pytest.mark.asyncio

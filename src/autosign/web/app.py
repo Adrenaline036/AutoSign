@@ -22,6 +22,7 @@ from autosign.core.auth import (
 from autosign.core.backup import BackupError
 from autosign.core.browser_sessions import (
     BROWSER_STATE_SECRET,
+    BrowserSessionCleanupCoordinator,
     BrowserSessionInfo,
     BrowserSessionInputError,
     BrowserSessionManager,
@@ -93,7 +94,10 @@ def create_app(
     master_key = settings.require_master_key()
     registry = PluginRegistry()
     runner = PluginRunner(registry)
-    database = Database(settings.database_url)
+    database = Database(
+        settings.database_url,
+        sqlite_busy_timeout_ms=settings.database_busy_timeout_ms,
+    )
     accounts = AccountService(database)
     cipher = SecretCipher(master_key)
     vault = VaultService(database, cipher)
@@ -112,6 +116,10 @@ def create_app(
             else None
         ),
         proxy_bypass=settings.browser_proxy_bypass,
+    )
+    browser_cleanup = BrowserSessionCleanupCoordinator(
+        browser_sessions,
+        poll_seconds=settings.browser_session_cleanup_poll_seconds,
     )
     executions = ExecutionService(database, runner)
     schedules = ScheduleService(database)
@@ -220,11 +228,13 @@ def create_app(
         registry.discover()
         scheduler.start()
         backup_coordinator.start()
+        browser_cleanup.start()
         try:
             yield
         finally:
             await scheduler.stop()
             await backup_coordinator.stop()
+            await browser_cleanup.stop()
             await browser_sessions.close_all()
             database.dispose()
 
@@ -240,6 +250,7 @@ def create_app(
     app.state.vault = vault
     app.state.auth = auth
     app.state.browser_sessions = browser_sessions
+    app.state.browser_cleanup = browser_cleanup
     app.state.executions = executions
     app.state.schedules = schedules
     app.state.scheduler = scheduler

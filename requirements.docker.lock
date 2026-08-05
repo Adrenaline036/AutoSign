@@ -1,0 +1,34 @@
+# Exact Python packages used by the reproducible Docker build.
+# Update this file deliberately together with Dockerfile and the full test suite.
+alembic==1.18.5
+annotated-doc==0.0.5
+annotated-types==0.8.0
+anyio==4.14.2
+cffi==2.1.1
+click==8.4.2
+cryptography==46.0.7
+fastapi==0.141.1
+greenlet==3.5.4
+h11==0.16.0
+hatchling==1.31.0
+idna==3.18
+Mako==1.3.12
+MarkupSafe==3.0.3
+packaging==26.2
+pathspec==1.1.1
+playwright==1.61.0
+pluggy==1.6.0
+pycparser==3.0
+pydantic==2.13.4
+pydantic_core==2.46.4
+pydantic-settings==2.14.2
+pyee==13.0.1
+python-dotenv==1.2.2
+SQLAlchemy==2.0.51
+starlette==1.3.1
+trove-classifiers==2026.6.1.19
+typing_extensions==4.16.0
+typing-inspection==0.4.2
+tzdata==2026.3
+uvicorn==0.52.1
+websockets==16.1.1

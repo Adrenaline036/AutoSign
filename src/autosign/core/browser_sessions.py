@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
@@ -597,6 +598,11 @@ class BrowserSessionManager:
                 await self._close_locked(session_id, save_state=False)
             await self._reset_browser_locked()
 
+    async def cleanup_expired(self) -> int:
+        """Close idle interactive sessions without waiting for another request."""
+        async with self._manager_lock:
+            return await self._cleanup_expired_locked()
+
     async def _get(self, session_id: str) -> ActiveBrowserSession:
         session = self._sessions.get(session_id)
         if session is None:
@@ -610,8 +616,12 @@ class BrowserSessionManager:
             )
         if datetime.now(UTC) - session.last_activity > self._timeout:
             async with self._manager_lock:
-                await self._close_locked(session_id, save_state=False)
-            raise BrowserSessionNotFoundError(f"Expired browser session: {session_id}")
+                expired = await self._expire_session_locked(session_id)
+            if expired:
+                raise BrowserSessionNotFoundError(f"Expired browser session: {session_id}")
+            session = self._sessions.get(session_id)
+            if session is None:
+                raise BrowserSessionNotFoundError(f"Unknown browser session: {session_id}")
         return session
 
     async def _close_locked(self, session_id: str, *, save_state: bool) -> str | None:
@@ -650,15 +660,26 @@ class BrowserSessionManager:
                     await session.context.close()
         return state_json
 
-    async def _cleanup_expired_locked(self) -> None:
-        now = datetime.now(UTC)
-        expired = [
-            session_id
-            for session_id, session in self._sessions.items()
-            if now - session.last_activity > self._timeout
-        ]
-        for session_id in expired:
-            await self._close_locked(session_id, save_state=False)
+    async def _cleanup_expired_locked(self) -> int:
+        expired_count = 0
+        for session_id in list(self._sessions):
+            if await self._expire_session_locked(session_id):
+                expired_count += 1
+        return expired_count
+
+    async def _expire_session_locked(self, session_id: str) -> bool:
+        session = self._sessions.get(session_id)
+        if session is None:
+            return False
+        async with session.operation_lock:
+            # Recheck after waiting for an in-flight browser operation. A request
+            # may have refreshed last_activity while cleanup was waiting.
+            if datetime.now(UTC) - session.last_activity <= self._timeout:
+                return False
+            self._discard_session(session)
+            with suppress(Exception):
+                await session.context.close()
+        return True
 
     async def _collect_falsey_indexeddb_keys(
         self,
@@ -844,3 +865,46 @@ class BrowserSessionManager:
     def _is_storage_state_error(exc: Exception) -> bool:
         message = str(exc).lower()
         return "error setting storage state" in message or "unable to restore indexeddb" in message
+
+
+class BrowserSessionCleanupCoordinator:
+    def __init__(
+        self,
+        browser_sessions: BrowserSessionManager,
+        *,
+        poll_seconds: float = 60,
+    ) -> None:
+        if poll_seconds <= 0:
+            raise ValueError("Browser cleanup poll interval must be positive.")
+        self._browser_sessions = browser_sessions
+        self._poll_seconds = poll_seconds
+        self._task: asyncio.Task[None] | None = None
+        self._logger = logging.getLogger("autosign.browser_sessions")
+
+    def start(self) -> None:
+        if self._task is None:
+            self._task = asyncio.create_task(self._run_loop())
+
+    async def stop(self) -> None:
+        if self._task is not None:
+            self._task.cancel()
+            await asyncio.gather(self._task, return_exceptions=True)
+            self._task = None
+
+    async def poll_once(self) -> int:
+        return await self._browser_sessions.cleanup_expired()
+
+    async def _run_loop(self) -> None:
+        while True:
+            try:
+                expired_count = await self.poll_once()
+                if expired_count:
+                    self._logger.info(
+                        "Closed %s expired interactive browser session(s)",
+                        expired_count,
+                    )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                self._logger.exception("Expired browser session cleanup failed")
+            await asyncio.sleep(self._poll_seconds)

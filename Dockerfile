@@ -1,10 +1,18 @@
-FROM python:3.11-slim AS novnc-assets
+# syntax=docker/dockerfile:1.7@sha256:a57df69d0ea827fb7266491f2813635de6f17269be881f696fbfdf2d83dda33e
 
-RUN apt-get update \
+ARG PYTHON_IMAGE=python:3.11.15-slim-bookworm@sha256:d29f48a31a8b408ed19272ca1e7b10ebae13b240a27e862d3d4217c528e2e0c3
+
+FROM ${PYTHON_IMAGE} AS novnc-assets
+
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
     && apt-get install -y --no-install-recommends novnc \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -f /var/cache/apt/archives/*.deb
 
-FROM python:3.11-slim
+FROM ${PYTHON_IMAGE}
+
+ARG PLAYWRIGHT_VERSION=1.61.0
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
@@ -14,27 +22,23 @@ ENV PYTHONDONTWRITEBYTECODE=1 \
 
 WORKDIR /app
 
-RUN pip install --no-cache-dir "playwright>=1.55,<2"
-RUN python -m playwright install --with-deps chromium
-RUN apt-get update \
+COPY requirements.docker.lock ./
+RUN --mount=type=cache,target=/root/.cache/pip \
+    pip install --requirement requirements.docker.lock \
+    && python -c "from importlib.metadata import version; assert version('playwright') == '${PLAYWRIGHT_VERSION}'"
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    python -m playwright install --with-deps chromium
+RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
+    --mount=type=cache,target=/var/lib/apt/lists,sharing=locked \
+    apt-get update \
     && apt-get install -y --no-install-recommends x11vnc xauth \
-    && rm -rf /var/lib/apt/lists/*
+    && rm -f /var/cache/apt/archives/*.deb
 COPY --from=novnc-assets /usr/share/novnc /usr/share/novnc
 COPY --from=novnc-assets /usr/share/doc/novnc /usr/share/doc/novnc
 RUN chmod -R a+rX /ms-playwright
 
 COPY pyproject.toml ./
-RUN --mount=type=cache,target=/root/.cache/pip \
-    pip install \
-      "hatchling>=1.27" \
-      "alembic>=1.16,<2" \
-      "cryptography>=45,<47" \
-      "fastapi>=0.116,<1" \
-      "pydantic-settings>=2.10,<3" \
-      "sqlalchemy>=2.0,<3" \
-      "tzdata>=2025.2" \
-      "uvicorn>=0.35,<1" \
-      "websockets>=15,<17"
 
 COPY README.md ./
 COPY src ./src

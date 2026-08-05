@@ -3,7 +3,7 @@ from __future__ import annotations
 from functools import lru_cache
 from pathlib import Path
 
-from pydantic import SecretStr
+from pydantic import Field, SecretStr
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -20,7 +20,9 @@ class Settings(BaseSettings):
     data_dir: Path = Path("./data")
     log_level: str = "INFO"
     master_key: SecretStr | None = None
-    browser_session_timeout_seconds: int = 900
+    database_busy_timeout_ms: int = Field(default=2000, ge=0, le=60_000)
+    browser_session_timeout_seconds: int = Field(default=900, ge=1)
+    browser_session_cleanup_poll_seconds: float = Field(default=60, gt=0)
     browser_headless: bool = True
     browser_hide_window: bool = False
     browser_proxy_server: SecretStr | None = None
