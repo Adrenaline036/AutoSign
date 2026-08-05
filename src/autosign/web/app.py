@@ -167,11 +167,15 @@ def create_app(
         async with browser_sessions.automation(
             storage_state_json=storage_state_json,
         ) as browser:
-            return await executions.execute(
+            result = await executions.execute(
                 account.plugin_id,
                 browser=browser,
                 **execute_options,
             )
+            if result.verified:
+                refreshed_state = await browser_sessions.capture_automation_state(browser)
+                vault.set(account.id, BROWSER_STATE_SECRET, refreshed_state)
+            return result
 
     async def notify_final_result(account_id: str, result: SignResult) -> None:
         account = accounts.get(account_id)
@@ -643,6 +647,10 @@ def create_app(
     async def start_browser_session(
         account_id: str,
         request: Request,
+        clean: bool = Query(
+            False,
+            description="Start without restoring the account's saved browser state.",
+        ),
     ) -> BrowserSessionRead:
         try:
             account = accounts.get(account_id)
@@ -667,7 +675,7 @@ def create_app(
         else:
             login_url = urljoin(str(request.base_url), manifest.login_url)
         storage_state_json = None
-        if BROWSER_STATE_SECRET in vault.list_names(account.id):
+        if not clean and BROWSER_STATE_SECRET in vault.list_names(account.id):
             storage_state_json = vault.get(account.id, BROWSER_STATE_SECRET)
         try:
             info = await browser_sessions.start(

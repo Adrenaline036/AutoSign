@@ -864,7 +864,7 @@
         browserDialog.showModal();
         try {
           activeBrowserSession = await api(
-            `/api/v1/accounts/${account.id}/browser-session`,
+            `/api/v1/accounts/${account.id}/browser-session?clean=true`,
             {method: "POST", body: "{}"}
           );
           browserPageTitle.textContent = activeBrowserSession.title;

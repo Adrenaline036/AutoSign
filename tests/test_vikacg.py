@@ -73,6 +73,21 @@ async def test_vikacg_recognizes_already_signed() -> None:
 
 
 @pytest.mark.asyncio
+async def test_vikacg_recognizes_plain_already_signed_label() -> None:
+    browser = FakeVikacgBrowser(
+        ["积分与签到 1925 积分 获得502积分 连续签到3天 已经签到"]
+    )
+
+    result = await VikacgPlugin().sign(
+        PluginContext(account_id="a1", account_label="VikACG", browser=browser)
+    )
+
+    assert result.status is SignStatus.ALREADY_SIGNED
+    assert result.verified is True
+    assert browser.clicked_selectors == []
+
+
+@pytest.mark.asyncio
 async def test_vikacg_requests_login_when_session_expired(monkeypatch) -> None:
     monkeypatch.setattr("autosign.plugins.vikacg.asyncio.sleep", _no_sleep)
     browser = FakeVikacgBrowser(["请先登录 登录后即可查看您的积分总量"])

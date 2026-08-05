@@ -148,6 +148,7 @@ class FakeCdpSession:
 class FakeContext:
     def __init__(self) -> None:
         self.page = FakePage()
+        self.page.context = self
         self.pages = [self.page]
         self.closed = False
         self.event_handlers: dict[str, list] = {}
@@ -424,6 +425,29 @@ async def test_automation_restores_encrypted_session_storage_extension() -> None
 
 
 @pytest.mark.asyncio
+async def test_automation_state_capture_includes_refreshed_browser_storage() -> None:
+    manager = BrowserSessionManager()
+    fake_browser = FakeBrowser()
+    manager._browser = fake_browser
+
+    async with manager.automation(
+        storage_state_json='{"cookies":[],"origins":[]}',
+    ) as client:
+        client.page.session_storage_entries = [["auth", "refreshed-token"]]
+        state_json = await manager.capture_automation_state(client)
+
+    state = json.loads(state_json)
+    assert state["cookies"][0]["name"] == "session"
+    assert state[SESSION_STORAGE_STATE_KEY] == [
+        {
+            "origin": "https://example.test",
+            "entries": [["auth", "refreshed-token"]],
+        }
+    ]
+    assert fake_browser.contexts[0].storage_state_indexed_db is True
+
+
+@pytest.mark.asyncio
 async def test_browser_manager_saves_session_storage_extension() -> None:
     manager = BrowserSessionManager()
     fake_browser = FakeBrowser()
@@ -590,8 +614,16 @@ class FakeApiBrowserManager:
         )
         self.closed = False
         self.login_complete = True
+        self.started_storage_states: list[str | None] = []
 
-    async def start(self, *, account_id: str, **_kwargs) -> BrowserSessionInfo:
+    async def start(
+        self,
+        *,
+        account_id: str,
+        storage_state_json: str | None = None,
+        **_kwargs,
+    ) -> BrowserSessionInfo:
+        self.started_storage_states.append(storage_state_json)
         self.info = BrowserSessionInfo(
             id=self.info.id,
             account_id=account_id,
@@ -662,6 +694,24 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         assert BROWSER_STATE_SECRET in closed.json()["secret_names"]
         stored = client.app.state.vault.get(account["id"], BROWSER_STATE_SECRET)
         assert '"value":"state"' in stored
+
+        restored = client.post(f"/api/v1/accounts/{account['id']}/browser-session")
+        assert restored.status_code == 200
+        assert browser_manager.started_storage_states[-1] == stored
+        client.post(
+            f"/api/v1/browser-sessions/{restored.json()['id']}/close",
+            json={"save_state": False},
+        )
+
+        clean = client.post(
+            f"/api/v1/accounts/{account['id']}/browser-session?clean=true"
+        )
+        assert clean.status_code == 200
+        assert browser_manager.started_storage_states[-1] is None
+        client.post(
+            f"/api/v1/browser-sessions/{clean.json()['id']}/close",
+            json={"save_state": False},
+        )
 
         browser_manager.login_complete = False
         second_account = client.post(

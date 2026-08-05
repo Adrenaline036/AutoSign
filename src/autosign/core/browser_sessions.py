@@ -566,6 +566,28 @@ class BrowserSessionManager:
         finally:
             await context.close()
 
+    async def capture_automation_state(
+        self,
+        browser: PlaywrightAutomationClient,
+    ) -> str:
+        """Capture state after a verified automated run for encrypted persistence.
+
+        A site can rotate a session cookie or refresh token while a task is
+        running. Without this capture, the next schedule restores only the
+        original interactive-login state and can be logged out unexpectedly.
+        """
+        page = browser.page
+        context = page.context
+        falsey_keys = await self._collect_falsey_indexeddb_keys(context)
+        session_storage = await self._collect_session_storage(context, page)
+        state = await context.storage_state(indexed_db=True)
+        self._apply_falsey_indexeddb_keys(state, falsey_keys)
+        state, _ = normalize_storage_state(state)
+        if session_storage:
+            state[SESSION_STORAGE_STATE_KEY] = session_storage
+        await self._validate_storage_state(state)
+        return json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+
     async def close_all(self) -> None:
         async with self._manager_lock:
             for session_id in list(self._sessions):
@@ -598,8 +620,10 @@ class BrowserSessionManager:
         async with session.operation_lock:
             try:
                 if save_state:
-                    falsey_keys = await self._collect_falsey_indexeddb_keys(session)
-                    session_storage = await self._collect_session_storage(session)
+                    falsey_keys = await self._collect_falsey_indexeddb_keys(session.context)
+                    session_storage = await self._collect_session_storage(
+                        session.context, session.page
+                    )
                     # Some modern applications keep their authentication token in
                     # IndexedDB instead of cookies or localStorage.  Preserve it as
                     # part of the same encrypted browser state so a later automation
@@ -635,11 +659,11 @@ class BrowserSessionManager:
 
     async def _collect_falsey_indexeddb_keys(
         self,
-        session: ActiveBrowserSession,
+        context: BrowserContext,
     ) -> list[dict]:
         results: list[dict] = []
         seen_origins: set[str] = set()
-        for page in session.context.pages:
+        for page in context.pages:
             if page.is_closed():
                 continue
             try:
@@ -658,14 +682,13 @@ class BrowserSessionManager:
 
     async def _collect_session_storage(
         self,
-        session: ActiveBrowserSession,
+        context: BrowserContext,
+        primary_page: Page,
     ) -> list[dict]:
         results: list[dict] = []
         seen_origins: set[str] = set()
-        other_pages = [
-            page for page in session.context.pages if page is not session.page
-        ]
-        pages = [session.page, *other_pages]
+        other_pages = [page for page in context.pages if page is not primary_page]
+        pages = [primary_page, *other_pages]
         for page in pages:
             if page.is_closed():
                 continue

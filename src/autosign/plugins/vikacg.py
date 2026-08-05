@@ -34,7 +34,7 @@ class VikacgPlugin(AutoSignPlugin):
     manifest = PluginManifest(
         id="vikacg",
         name="VikACG 维咔",
-        version="0.1.0",
+        version="0.1.1",
         description="使用已保存的浏览器登录状态执行 VikACG 每日签到，并验证页面状态。",
         domains=["www.vikacg.com", "vikacg.com"],
         login_url="https://www.vikacg.com/sign",
@@ -158,7 +158,10 @@ class VikacgPlugin(AutoSignPlugin):
 
     @staticmethod
     def _already_signed(text: str) -> bool:
-        return any(marker in text for marker in ("今日已签", "今天已签到", "今日已经签到"))
+        return any(
+            marker in text
+            for marker in ("今日已签", "今天已签到", "今日已经签到", "已经签到")
+        )
 
     @staticmethod
     def _can_sign(text: str) -> bool:
