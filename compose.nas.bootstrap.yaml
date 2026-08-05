@@ -1,6 +1,6 @@
 services:
   autosign-permissions:
-    image: autosign-local:0.15.2
+    image: autosign-local:0.15.3
     pull_policy: never
     container_name: autosign-permissions
     user: "0:0"
@@ -18,7 +18,7 @@ services:
     restart: "no"
 
   autosign:
-    image: autosign-local:0.15.2
+    image: autosign-local:0.15.3
     pull_policy: never
     container_name: autosign
     restart: unless-stopped

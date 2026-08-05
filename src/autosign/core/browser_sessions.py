@@ -480,7 +480,10 @@ class BrowserSessionManager:
         async with session.operation_lock:
             self._touch(session)
             try:
-                await session.page.keyboard.type(text)
+                # Insert text into the currently focused page control without
+                # interpreting password symbols, CJK text, or modifier-looking
+                # characters as physical keyboard shortcuts.
+                await session.page.keyboard.insert_text(text)
             except Exception as exc:
                 await self._translate_target_closed(session, exc)
                 raise

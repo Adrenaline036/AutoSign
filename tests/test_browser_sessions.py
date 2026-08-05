@@ -40,11 +40,11 @@ class FakeMouse:
 
 class FakeKeyboard:
     def __init__(self) -> None:
-        self.typed: list[str] = []
+        self.inserted: list[str] = []
         self.pressed: list[str] = []
 
-    async def type(self, text: str) -> None:
-        self.typed.append(text)
+    async def insert_text(self, text: str) -> None:
+        self.inserted.append(text)
 
     async def press(self, key: str) -> None:
         self.pressed.append(key)
@@ -527,7 +527,8 @@ async def test_browser_manager_lifecycle_and_input() -> None:
     await manager.focus(info.id)
 
     await manager.click(info.id, x=100, y=200)
-    await manager.type_text(info.id, text="username")
+    pasted_text = "用户+密碼'\" <token>&"
+    await manager.type_text(info.id, text=pasted_text)
     await manager.press_key(info.id, key="Enter")
     assert await manager.login_is_complete(info.id, selectors=("#logged-in",)) is True
     assert await manager.login_is_complete(
@@ -539,7 +540,7 @@ async def test_browser_manager_lifecycle_and_input() -> None:
     page = fake_browser.contexts[0].page
     assert page.brought_to_front is True
     assert page.mouse.clicks == [(100, 200)]
-    assert page.keyboard.typed == ["username"]
+    assert page.keyboard.inserted == [pasted_text]
     assert page.keyboard.pressed == ["Enter"]
 
     state_json = await manager.close(info.id, save_state=True)

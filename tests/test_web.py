@@ -61,6 +61,8 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert 'id="browser-live-open"' in dashboard.text
     assert "activeBrowserSession.live_url" in dashboard.text
     assert 'id="browser-keyboard-capture"' in dashboard.text
+    assert 'browserKeyboardCapture.addEventListener("paste"' in dashboard.text
+    assert "event.clipboardData?.getData(\"text/plain\")" in dashboard.text
     assert "browserFrameRequestActive" in dashboard.text
     assert 'id="execution-history"' in dashboard.text
     assert 'id="browser-text-form"' not in dashboard.text
@@ -82,6 +84,27 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert execution.status_code == 200
     assert execution.json()["verified"] is True
     assert execution.json()["details"]["reward"] == 5
+
+
+def test_live_browser_uses_csrf_protected_masked_paste() -> None:
+    live_browser = (
+        Path(__file__).parents[1]
+        / "src"
+        / "autosign"
+        / "web"
+        / "static"
+        / "live_browser.html"
+    ).read_text(encoding="utf-8")
+
+    assert 'id="paste-input" type="password"' in live_browser
+    assert 'maxlength="4096" autocomplete="off"' in live_browser
+    assert 'fetch("/api/v1/auth/status"' in live_browser
+    assert '"X-AutoSign-CSRF": token' in live_browser
+    assert "/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/type" in live_browser
+    assert 'document.addEventListener("paste"' in live_browser
+    assert "event.stopImmediatePropagation()" in live_browser
+    assert "JSON.stringify({text})" in live_browser
+    assert "status.textContent = `已向远端输入框发送 ${text.length} 个字符。`;" in live_browser
 
 
 def test_backup_status_and_manual_actions(tmp_path: Path, monkeypatch) -> None:

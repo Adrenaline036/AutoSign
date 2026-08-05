@@ -1611,6 +1611,19 @@
         );
       });
 
+      browserKeyboardCapture.addEventListener("paste", (event) => {
+        if (!activeBrowserSession) return;
+        const text = event.clipboardData?.getData("text/plain") || "";
+        if (!text) return;
+        event.preventDefault();
+        event.stopPropagation();
+        browserKeyboardCapture.value = "";
+        queueBrowserInput(
+          `/api/v1/browser-sessions/${activeBrowserSession.id}/type`,
+          {text}
+        );
+      });
+
       browserKeyboardCapture.addEventListener("keydown", (event) => {
         if (!activeBrowserSession) return;
         const supportedKeys = new Map([
