@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import pytest
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from autosign.plugin_sdk import PluginContext, SignStatus
 from autosign.plugins.vikacg import VikacgPlugin
@@ -9,7 +10,7 @@ from autosign.plugins.vikacg import VikacgPlugin
 class FakeVikacgBrowser:
     def __init__(
         self,
-        bodies: list[str],
+        bodies: list[str | Exception],
         *,
         status: int = 200,
         click_result: bool = True,
@@ -26,8 +27,12 @@ class FakeVikacgBrowser:
 
     async def body_text(self) -> str:
         if len(self.bodies) > 1:
-            return self.bodies.pop(0)
-        return self.bodies[0]
+            result = self.bodies.pop(0)
+        else:
+            result = self.bodies[0]
+        if isinstance(result, Exception):
+            raise result
+        return result
 
     async def click(self, selector: str) -> bool:
         self.clicked_selectors.append(selector)
@@ -74,9 +79,7 @@ async def test_vikacg_recognizes_already_signed() -> None:
 
 @pytest.mark.asyncio
 async def test_vikacg_recognizes_plain_already_signed_label() -> None:
-    browser = FakeVikacgBrowser(
-        ["积分与签到 1925 积分 获得502积分 连续签到3天 已经签到"]
-    )
+    browser = FakeVikacgBrowser(["积分与签到 1925 积分 获得502积分 连续签到3天 已经签到"])
 
     result = await VikacgPlugin().sign(
         PluginContext(account_id="a1", account_label="VikACG", browser=browser)
@@ -185,3 +188,102 @@ async def test_vikacg_rejects_unrecognized_page(monkeypatch) -> None:
 
     assert result.status is SignStatus.FAILED
     assert result.details["stage"] == "find_sign_button"
+
+
+@pytest.mark.asyncio
+async def test_vikacg_tolerates_transient_body_timeouts(monkeypatch) -> None:
+    monkeypatch.setattr("autosign.plugins.vikacg.asyncio.sleep", _no_sleep)
+    body_timeout = PlaywrightTimeoutError(
+        'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
+    )
+    browser = FakeVikacgBrowser(
+        [
+            body_timeout,
+            "积分与签到 今日未签 立即签到",
+            body_timeout,
+            "签到成功 今日已签",
+        ]
+    )
+
+    result = await VikacgPlugin().sign(
+        PluginContext(account_id="a1", account_label="VikACG", browser=browser)
+    )
+
+    assert result.status is SignStatus.SUCCESS
+    assert result.verified is True
+
+
+@pytest.mark.asyncio
+async def test_vikacg_reports_repeated_body_timeouts_as_load_failure(monkeypatch) -> None:
+    monkeypatch.setattr("autosign.plugins.vikacg.asyncio.sleep", _no_sleep)
+    browser = FakeVikacgBrowser(
+        [
+            PlaywrightTimeoutError(
+                'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
+            )
+            for _ in range(VikacgPlugin.BODY_READ_TIMEOUT_LIMIT)
+        ]
+    )
+
+    result = await VikacgPlugin().sign(
+        PluginContext(account_id="a1", account_label="VikACG", browser=browser)
+    )
+
+    assert result.status is SignStatus.FAILED
+    assert result.verified is False
+    assert result.details == {
+        "stage": "load_mission_page",
+        "body_read_timeouts": VikacgPlugin.BODY_READ_TIMEOUT_LIMIT,
+    }
+
+
+@pytest.mark.asyncio
+async def test_vikacg_reports_repeated_body_timeouts_after_click(monkeypatch) -> None:
+    monkeypatch.setattr("autosign.plugins.vikacg.asyncio.sleep", _no_sleep)
+    browser = FakeVikacgBrowser(
+        [
+            "积分与签到 今日未签 立即签到",
+            *[
+                PlaywrightTimeoutError(
+                    'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
+                )
+                for _ in range(VikacgPlugin.BODY_READ_TIMEOUT_LIMIT)
+            ],
+        ]
+    )
+
+    result = await VikacgPlugin().sign(
+        PluginContext(account_id="a1", account_label="VikACG", browser=browser)
+    )
+
+    assert result.status is SignStatus.FAILED
+    assert result.details["stage"] == "verify_sign_result"
+    assert result.details["body_read_timeouts"] == VikacgPlugin.BODY_READ_TIMEOUT_LIMIT
+
+
+@pytest.mark.asyncio
+async def test_vikacg_does_not_hide_non_timeout_browser_errors(monkeypatch) -> None:
+    monkeypatch.setattr("autosign.plugins.vikacg.asyncio.sleep", _no_sleep)
+    browser = FakeVikacgBrowser([RuntimeError("browser target closed")])
+
+    with pytest.raises(RuntimeError, match="browser target closed"):
+        await VikacgPlugin().sign(
+            PluginContext(account_id="a1", account_label="VikACG", browser=browser)
+        )
+
+
+@pytest.mark.asyncio
+async def test_vikacg_does_not_hide_unrelated_playwright_timeouts(monkeypatch) -> None:
+    monkeypatch.setattr("autosign.plugins.vikacg.asyncio.sleep", _no_sleep)
+    browser = FakeVikacgBrowser(
+        [
+            PlaywrightTimeoutError(
+                'Locator.click: Timeout 5000ms exceeded. waiting for locator("button")'
+            )
+        ]
+    )
+
+    with pytest.raises(PlaywrightTimeoutError, match="Locator.click"):
+        await VikacgPlugin().sign(
+            PluginContext(account_id="a1", account_label="VikACG", browser=browser)
+        )

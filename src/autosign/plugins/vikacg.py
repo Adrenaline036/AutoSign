@@ -4,6 +4,7 @@ import asyncio
 
 from autosign.plugin_sdk import (
     AutoSignPlugin,
+    BrowserAutomation,
     PluginCapability,
     PluginContext,
     PluginManifest,
@@ -30,11 +31,12 @@ class VikacgPlugin(AutoSignPlugin):
     CLICK_POLL_INTERVAL_SECONDS = 0.5
     POLL_ATTEMPTS = 6
     POLL_INTERVAL_SECONDS = 0.75
+    BODY_READ_TIMEOUT_LIMIT = 3
 
     manifest = PluginManifest(
         id="vikacg",
         name="VikACG 维咔",
-        version="0.1.1",
+        version="0.1.2",
         description="使用已保存的浏览器登录状态执行 VikACG 每日签到，并验证页面状态。",
         domains=["www.vikacg.com", "vikacg.com"],
         login_url="https://www.vikacg.com/sign",
@@ -75,8 +77,15 @@ class VikacgPlugin(AutoSignPlugin):
 
         body = ""
         mission_ready = False
+        body_read_timeouts = 0
         for attempt in range(self.READY_POLL_ATTEMPTS):
-            body = await browser.body_text()
+            current_body = await self._body_text_or_none(browser)
+            if current_body is None:
+                body_read_timeouts += 1
+                if body_read_timeouts >= self.BODY_READ_TIMEOUT_LIMIT:
+                    break
+            else:
+                body = current_body
             # Some SPA shells briefly render a login prompt while restoring the
             # client-side session. A visible mission state is more authoritative
             # than login-related text elsewhere in the same page.
@@ -94,16 +103,31 @@ class VikacgPlugin(AutoSignPlugin):
                 details={"result_excerpt": self._excerpt(body)},
             )
         if not mission_ready:
+            if not body and body_read_timeouts:
+                return SignResult(
+                    status=SignStatus.FAILED,
+                    message="VikACG 签到页面持续切换，暂时无法读取页面内容。",
+                    verified=False,
+                    details={
+                        "stage": "load_mission_page",
+                        "body_read_timeouts": body_read_timeouts,
+                    },
+                )
             if self._login_required(body):
                 return self._interaction_required(body)
+            details: dict[str, str | int] = {
+                "stage": "find_sign_button",
+                "result_excerpt": self._excerpt(body),
+            }
+            if body_read_timeouts:
+                details["body_read_timeouts"] = body_read_timeouts
             return SignResult(
                 status=SignStatus.FAILED,
                 message=(
-                    "VikACG 页面等待超时，未找到可确认的签到状态，"
-                    "网站可能仍在加载或结构已经变化。"
+                    "VikACG 页面等待超时，未找到可确认的签到状态，网站可能仍在加载或结构已经变化。"
                 ),
                 verified=False,
-                details={"stage": "find_sign_button", "result_excerpt": self._excerpt(body)},
+                details=details,
             )
 
         clicked = False
@@ -129,9 +153,16 @@ class VikacgPlugin(AutoSignPlugin):
             )
 
         latest_body = body
+        body_read_timeouts = 0
         for _attempt in range(self.POLL_ATTEMPTS):
             await asyncio.sleep(self.POLL_INTERVAL_SECONDS)
-            latest_body = await browser.body_text()
+            current_body = await self._body_text_or_none(browser)
+            if current_body is None:
+                body_read_timeouts += 1
+                if body_read_timeouts >= self.BODY_READ_TIMEOUT_LIMIT:
+                    break
+                continue
+            latest_body = current_body
             if self._sign_succeeded(latest_body):
                 return SignResult(
                     status=SignStatus.SUCCESS,
@@ -142,25 +173,45 @@ class VikacgPlugin(AutoSignPlugin):
             if self._login_required(latest_body):
                 return self._interaction_required(latest_body)
 
+        details = {
+            "stage": "verify_sign_result",
+            "result_excerpt": self._excerpt(latest_body),
+        }
+        if body_read_timeouts:
+            details["body_read_timeouts"] = body_read_timeouts
         return SignResult(
             status=SignStatus.FAILED,
-            message="VikACG 点击签到后没有出现可确认的成功状态。",
+            message=(
+                "VikACG 点击签到后页面持续切换，未能读取成功状态。"
+                if body_read_timeouts >= self.BODY_READ_TIMEOUT_LIMIT
+                else "VikACG 点击签到后没有出现可确认的成功状态。"
+            ),
             verified=False,
-            details={"stage": "verify_sign_result", "result_excerpt": self._excerpt(latest_body)},
+            details=details,
         )
+
+    @staticmethod
+    async def _body_text_or_none(browser: BrowserAutomation) -> str | None:
+        """Ignore only transient Playwright timeouts while the SPA replaces ``body``."""
+        try:
+            return await browser.body_text()
+        except Exception as exc:
+            message = str(exc)
+            is_body_timeout = type(exc).__name__ == "TimeoutError" and 'locator("body")' in message
+            if is_body_timeout:
+                return None
+            raise
 
     @staticmethod
     def _login_required(text: str) -> bool:
         return any(
-            marker in text
-            for marker in ("请先登录", "登录后即可查看您的积分", "使用维咔账号登录")
+            marker in text for marker in ("请先登录", "登录后即可查看您的积分", "使用维咔账号登录")
         )
 
     @staticmethod
     def _already_signed(text: str) -> bool:
         return any(
-            marker in text
-            for marker in ("今日已签", "今天已签到", "今日已经签到", "已经签到")
+            marker in text for marker in ("今日已签", "今天已签到", "今日已经签到", "已经签到")
         )
 
     @staticmethod
