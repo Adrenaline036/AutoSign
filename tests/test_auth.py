@@ -24,7 +24,7 @@ def auth_settings(data_dir: Path) -> Settings:
     )
 
 
-def test_first_run_setup_login_csrf_and_logout(tmp_path: Path) -> None:
+def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
     with TestClient(create_app(auth_settings(tmp_path))) as client:
         first_page = client.get("/")
         assert "设置管理员密码" in first_page.text
@@ -45,6 +45,19 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path) -> None:
         assert "HttpOnly" in setup.headers["set-cookie"]
         assert "SameSite=strict" in setup.headers["set-cookie"]
         csrf_token = setup.json()["csrf_token"]
+
+        paste_without_csrf = client.post(
+            "/api/v1/browser-sessions/unknown/type",
+            json={"text": "must-not-be-logged"},
+        )
+        assert paste_without_csrf.status_code == 403
+        paste_unknown_session = client.post(
+            "/api/v1/browser-sessions/unknown/type",
+            headers={"X-AutoSign-CSRF": csrf_token},
+            json={"text": "must-not-be-logged"},
+        )
+        assert paste_unknown_session.status_code == 404
+        assert "must-not-be-logged" not in caplog.text
 
         authenticated_page = client.get("/")
         assert authenticated_page.status_code == 200

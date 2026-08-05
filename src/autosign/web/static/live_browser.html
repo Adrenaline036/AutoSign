@@ -8,15 +8,22 @@
     <style>
       :root { color-scheme: dark; font-family: Inter, "Microsoft YaHei", system-ui, sans-serif; }
       * { box-sizing: border-box; }
-      body { margin: 0; height: 100vh; overflow: hidden; background: #050a13; color: #e8eef8; }
-      header { height: 48px; display: flex; align-items: center; gap: 12px; padding: 0 14px;
-        background: #101c30; border-bottom: 1px solid #31496d; }
-      #status { flex: 1; color: #9eb0ca; overflow: hidden; text-overflow: ellipsis;
+      body { margin: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column;
+        background: #050a13; color: #e8eef8; }
+      header { min-height: 48px; display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+        flex-wrap: wrap; background: #101c30; border-bottom: 1px solid #31496d; }
+      #status { flex: 1; min-width: 220px; color: #9eb0ca; overflow: hidden; text-overflow: ellipsis;
         white-space: nowrap; }
       button { border: 0; border-radius: 9px; padding: 8px 13px; background: #2a405f;
         color: white; font: inherit; font-weight: 700; cursor: pointer; }
-      #screen { width: 100%; height: calc(100vh - 48px); background: #050a13; overflow: hidden; }
+      button:disabled { cursor: wait; opacity: 0.65; }
+      #screen { flex: 1; min-height: 0; width: 100%; background: #050a13; overflow: hidden; }
       #screen canvas { outline: none; }
+      .paste-tools { display: flex; align-items: center; gap: 7px; }
+      #paste-input { width: min(300px, 42vw); border: 1px solid #426087; border-radius: 9px;
+        padding: 8px 10px; background: #081426; color: #eef5ff; font: inherit; }
+      #paste-input:focus { outline: 2px solid #4f8fd8; outline-offset: 1px; }
+      #paste-send { background: #147f83; }
       .ok { color: #71e4ad !important; }
       .error { color: #ffabb5 !important; }
     </style>
@@ -25,6 +32,13 @@
     <header>
       <strong>AutoSign 实时登录浏览器</strong>
       <span id="status">正在连接 NAS 内的 Chromium…</span>
+      <div class="paste-tools">
+        <input id="paste-input" type="password" maxlength="4096" autocomplete="off"
+          autocapitalize="off" spellcheck="false"
+          placeholder="先点击网页输入框，再粘贴到这里">
+        <button id="paste-reveal" type="button">显示</button>
+        <button id="paste-send" type="button">发送到网页</button>
+      </div>
       <button id="close" type="button">完成操作，关闭本页</button>
     </header>
     <div id="screen" tabindex="0" aria-label="NAS 内实时 Chromium 画面"></div>
@@ -33,6 +47,9 @@
 
       const status = document.querySelector("#status");
       const screen = document.querySelector("#screen");
+      const pasteInput = document.querySelector("#paste-input");
+      const pasteReveal = document.querySelector("#paste-reveal");
+      const pasteSend = document.querySelector("#paste-send");
       const sessionId = location.pathname.split("/").filter(Boolean).at(-2);
       const websocketProtocol = location.protocol === "https:" ? "wss:" : "ws:";
       const websocketUrl = `${websocketProtocol}//${location.host}` +
@@ -44,13 +61,127 @@
       rfb.viewOnly = false;
       rfb.focusOnClick = true;
       rfb.clipViewport = false;
+      let connected = false;
+      let remoteInputArmed = false;
+      let csrfToken = null;
+      let sendingText = false;
+
+      async function getCsrfToken() {
+        if (csrfToken) return csrfToken;
+        const response = await fetch("/api/v1/auth/status", {
+          cache: "no-store",
+          credentials: "same-origin",
+        });
+        if (!response.ok) throw new Error("管理员登录状态已失效，请返回 AutoSign 重新登录。");
+        const auth = await response.json();
+        if (!auth.authenticated || !auth.csrf_token) {
+          throw new Error("管理员登录状态已失效，请返回 AutoSign 重新登录。");
+        }
+        csrfToken = auth.csrf_token;
+        return csrfToken;
+      }
+
+      async function sendTextToRemote(text) {
+        if (sendingText) return;
+        if (!connected) throw new Error("实时浏览器尚未连接。");
+        if (!remoteInputArmed) throw new Error("请先点击远端网页中的输入框。");
+        if (!text || text.length > 4096) throw new Error("粘贴文本必须为 1-4096 个字符。");
+        sendingText = true;
+        pasteSend.disabled = true;
+        try {
+          const token = await getCsrfToken();
+          const response = await fetch(
+            `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/type`,
+            {
+              method: "POST",
+              credentials: "same-origin",
+              headers: {
+                "Content-Type": "application/json",
+                "X-AutoSign-CSRF": token,
+              },
+              body: JSON.stringify({text}),
+            },
+          );
+          if (!response.ok) {
+            let message = `发送失败（${response.status}）`;
+            try {
+              const body = await response.json();
+              message = body.detail || message;
+            } catch {}
+            throw new Error(message);
+          }
+          status.textContent = `已向远端输入框发送 ${text.length} 个字符。`;
+          status.className = "ok";
+        } finally {
+          pasteInput.value = "";
+          text = "";
+          sendingText = false;
+          pasteSend.disabled = false;
+          screen.focus();
+        }
+      }
+
+      function reportPasteError(error) {
+        status.textContent = error instanceof Error ? error.message : "粘贴发送失败。";
+        status.className = "error";
+      }
+
+      screen.addEventListener("pointerdown", () => {
+        remoteInputArmed = true;
+      }, true);
+
+      document.addEventListener("keydown", (event) => {
+        if (event.target === pasteInput) return;
+        if (!connected || !remoteInputArmed || !document.hasFocus()) return;
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+          // Keep noVNC from sending a second remote Ctrl+V. Do not prevent the
+          // browser default here: it is what produces the following paste event.
+          event.stopImmediatePropagation();
+        }
+      }, true);
+
+      document.addEventListener("keyup", (event) => {
+        if (event.target === pasteInput) return;
+        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+          event.stopImmediatePropagation();
+        }
+      }, true);
+
+      document.addEventListener("paste", (event) => {
+        if (event.target === pasteInput) return;
+        if (!connected || !remoteInputArmed || !document.hasFocus()) return;
+        const text = event.clipboardData?.getData("text/plain") || "";
+        if (!text) return;
+        event.preventDefault();
+        event.stopImmediatePropagation();
+        sendTextToRemote(text).catch(reportPasteError);
+      }, true);
+
+      pasteSend.addEventListener("click", () => {
+        const text = pasteInput.value;
+        sendTextToRemote(text).catch(reportPasteError);
+      });
+      pasteInput.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        pasteSend.click();
+      });
+      pasteReveal.addEventListener("click", () => {
+        const reveal = pasteInput.type === "password";
+        pasteInput.type = reveal ? "text" : "password";
+        pasteReveal.textContent = reveal ? "隐藏" : "显示";
+        pasteInput.focus();
+      });
 
       rfb.addEventListener("connect", () => {
+        connected = true;
         status.textContent = "已连接。请在此完成登录和安全验证，完成后关闭本页。";
         status.className = "ok";
         screen.focus();
       });
       rfb.addEventListener("disconnect", (event) => {
+        connected = false;
+        remoteInputArmed = false;
         if (event.detail.clean) {
           status.textContent = "实时浏览器连接已关闭，可以返回 AutoSign。";
           status.className = "";
