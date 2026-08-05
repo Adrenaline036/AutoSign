@@ -13,13 +13,18 @@ class FakeYamiboBrowser:
         formhash: str | None,
         message: str,
         body: str = "",
+        html: str = "<html><body>Discuz</body></html>",
+        formhashes: list[str | None] | None = None,
         statuses: list[int] | None = None,
     ) -> None:
         self.formhash = formhash
+        self.formhashes = formhashes if formhashes is not None else [formhash]
         self.message = message
         self.body = body
+        self.html = html
         self.statuses = statuses or [200]
         self.visits: list[tuple[str, str | None]] = []
+        self.input_value_calls = 0
 
     async def goto(self, url: str, *, referrer: str | None = None) -> int:
         self.visits.append((url, referrer))
@@ -27,13 +32,18 @@ class FakeYamiboBrowser:
         return self.statuses[index]
 
     async def input_value(self, _selector: str) -> str | None:
-        return self.formhash
+        index = min(self.input_value_calls, len(self.formhashes) - 1)
+        self.input_value_calls += 1
+        return self.formhashes[index]
 
     async def text_content(self, _selector: str) -> str | None:
         return self.message or None
 
     async def body_text(self) -> str:
         return self.body or self.message
+
+    async def html_content(self) -> str:
+        return self.html
 
 
 @pytest.mark.asyncio
@@ -55,6 +65,7 @@ async def test_yamibo_sign_success() -> None:
 async def test_yamibo_allows_initial_waf_challenge_to_finish() -> None:
     browser = FakeYamiboBrowser(
         formhash="token",
+        formhashes=[None, None, "token"],
         message="签到成功！",
         statuses=[405, 200],
     )
@@ -64,6 +75,84 @@ async def test_yamibo_allows_initial_waf_challenge_to_finish() -> None:
 
     assert result.status is SignStatus.SUCCESS
     assert result.verified is True
+    assert result.details["initial_http_status"] == 405
+    assert result.details["formhash_attempts"] == 3
+    assert browser.input_value_calls == 3
+    assert browser.visits[0] == (YamiboPlugin.SIGN_URL, None)
+    assert len(browser.visits) == 2
+
+
+@pytest.mark.asyncio
+async def test_yamibo_reports_waf_challenge_that_never_finishes() -> None:
+    browser = FakeYamiboBrowser(
+        formhash=None,
+        formhashes=[None] * YamiboPlugin.WAF_FORMHASH_ATTEMPTS,
+        message="",
+        html=(
+            "<html><head><script>window.__noxExpire=30;window.__noxImd=1;</script>"
+            '<script src="/static/nox_20260413.js"></script>'
+            '<script src="/static/gangplank_20251103.js"></script></head><body></body></html>'
+        ),
+        statuses=[405],
+    )
+
+    result = await YamiboPlugin().sign(
+        PluginContext(account_id="a1", account_label="百合会", browser=browser)
+    )
+
+    assert result.status is SignStatus.FAILED
+    assert result.verified is False
+    assert result.details["stage"] == "waf_challenge"
+    assert result.details["initial_http_status"] == 405
+    assert result.details["formhash_attempts"] == YamiboPlugin.WAF_FORMHASH_ATTEMPTS
+    assert "nox_" in result.details["waf_markers"]
+    assert "WAF" in result.message
+    assert browser.input_value_calls == YamiboPlugin.WAF_FORMHASH_ATTEMPTS
+    assert browser.visits == [(YamiboPlugin.SIGN_URL, None)]
+
+
+@pytest.mark.asyncio
+async def test_yamibo_reports_missing_formhash_after_challenge_finishes() -> None:
+    browser = FakeYamiboBrowser(
+        formhash=None,
+        formhashes=[None] * YamiboPlugin.WAF_FORMHASH_ATTEMPTS,
+        message="",
+        body="百合会签到页面",
+        html="<html><head></head><body>百合会签到页面</body></html>",
+        statuses=[405],
+    )
+
+    result = await YamiboPlugin().sign(
+        PluginContext(account_id="a1", account_label="百合会", browser=browser)
+    )
+
+    assert result.status is SignStatus.FAILED
+    assert result.details["stage"] == "read_formhash"
+    assert result.details["initial_http_status"] == 405
+    assert result.details["result_excerpt"] == "百合会签到页面"
+    assert browser.input_value_calls == YamiboPlugin.WAF_FORMHASH_ATTEMPTS
+    assert browser.visits == [(YamiboPlugin.SIGN_URL, None)]
+
+
+@pytest.mark.asyncio
+async def test_yamibo_does_not_wait_on_unknown_http_error() -> None:
+    browser = FakeYamiboBrowser(
+        formhash=None,
+        formhashes=[None] * YamiboPlugin.WAF_FORMHASH_ATTEMPTS,
+        message="",
+        statuses=[503],
+    )
+
+    result = await YamiboPlugin().sign(
+        PluginContext(account_id="a1", account_label="百合会", browser=browser)
+    )
+
+    assert result.status is SignStatus.FAILED
+    assert result.details["stage"] == "open_sign_page"
+    assert result.details["initial_http_status"] == 503
+    assert result.details["formhash_attempts"] == 1
+    assert browser.input_value_calls == 1
+    assert browser.visits == [(YamiboPlugin.SIGN_URL, None)]
 
 
 @pytest.mark.asyncio
