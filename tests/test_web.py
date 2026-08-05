@@ -105,6 +105,10 @@ def test_live_browser_uses_csrf_protected_masked_paste() -> None:
     assert "event.stopImmediatePropagation()" in live_browser
     assert "JSON.stringify({text})" in live_browser
     assert "status.textContent = `已向远端输入框发送 ${text.length} 个字符。`;" in live_browser
+    assert "/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/activity" in live_browser
+    assert 'screen.addEventListener("pointerdown"' in live_browser
+    assert 'screen.addEventListener("wheel"' in live_browser
+    assert "void reportRemoteActivity();" in live_browser
 
 
 def test_backup_status_and_manual_actions(tmp_path: Path, monkeypatch) -> None:

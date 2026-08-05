@@ -33,6 +33,7 @@ ALLOWED_KEYS = {
     "PageUp",
     "PageDown",
 }
+BROWSER_SESSION_LOGGER = logging.getLogger("uvicorn.error.autosign.browser_sessions")
 PASSWORD_FORM_GUARD_SCRIPT = r"""
 (() => {
   window.addEventListener("submit", (event) => {
@@ -325,6 +326,7 @@ class BrowserSessionManager:
         self._sessions: dict[str, ActiveBrowserSession] = {}
         self._account_sessions: dict[str, str] = {}
         self._manager_lock = asyncio.Lock()
+        self._logger = BROWSER_SESSION_LOGGER
 
     async def _ensure_browser(self) -> Browser:
         if self._browser is not None and not self._browser.is_connected():
@@ -345,7 +347,7 @@ class BrowserSessionManager:
         storage_state_json: str | None = None,
     ) -> BrowserSessionInfo:
         async with self._manager_lock:
-            await self._cleanup_expired_locked()
+            self._log_expired(await self._cleanup_expired_locked())
             existing_id = self._account_sessions.get(account_id)
             if existing_id is not None:
                 await self._close_locked(existing_id, save_state=False)
@@ -416,7 +418,6 @@ class BrowserSessionManager:
     async def get_info(self, session_id: str) -> BrowserSessionInfo:
         session = await self._get(session_id)
         async with session.operation_lock:
-            self._touch(session)
             try:
                 return await self._info(session)
             except Exception as exc:
@@ -436,7 +437,6 @@ class BrowserSessionManager:
     async def screenshot(self, session_id: str) -> bytes:
         session = await self._get(session_id)
         async with session.operation_lock:
-            self._touch(session)
             cdp_session = None
             try:
                 # Playwright's high-level screenshot API waits for every web font
@@ -461,6 +461,12 @@ class BrowserSessionManager:
                 if cdp_session is not None:
                     with suppress(Exception):
                         await cdp_session.detach()
+
+    async def mark_activity(self, session_id: str) -> None:
+        """Refresh an interactive session only for an explicit user action."""
+        session = await self._get(session_id)
+        async with session.operation_lock:
+            self._touch(session)
 
     async def click(self, session_id: str, *, x: float, y: float) -> None:
         if not 0 <= x <= VIEWPORT_WIDTH or not 0 <= y <= VIEWPORT_HEIGHT:
@@ -601,7 +607,9 @@ class BrowserSessionManager:
     async def cleanup_expired(self) -> int:
         """Close idle interactive sessions without waiting for another request."""
         async with self._manager_lock:
-            return await self._cleanup_expired_locked()
+            expired_count = await self._cleanup_expired_locked()
+        self._log_expired(expired_count)
+        return expired_count
 
     async def _get(self, session_id: str) -> ActiveBrowserSession:
         session = self._sessions.get(session_id)
@@ -618,6 +626,7 @@ class BrowserSessionManager:
             async with self._manager_lock:
                 expired = await self._expire_session_locked(session_id)
             if expired:
+                self._log_expired(1)
                 raise BrowserSessionNotFoundError(f"Expired browser session: {session_id}")
             session = self._sessions.get(session_id)
             if session is None:
@@ -804,6 +813,13 @@ class BrowserSessionManager:
     def _touch(session: ActiveBrowserSession) -> None:
         session.last_activity = datetime.now(UTC)
 
+    def _log_expired(self, expired_count: int) -> None:
+        if expired_count:
+            self._logger.info(
+                "Closed %s expired interactive browser session(s)",
+                expired_count,
+            )
+
     def _activate_page(self, session: ActiveBrowserSession, page: Page) -> None:
         if page.is_closed() or session.id not in self._sessions:
             return
@@ -879,7 +895,7 @@ class BrowserSessionCleanupCoordinator:
         self._browser_sessions = browser_sessions
         self._poll_seconds = poll_seconds
         self._task: asyncio.Task[None] | None = None
-        self._logger = logging.getLogger("autosign.browser_sessions")
+        self._logger = BROWSER_SESSION_LOGGER
 
     def start(self) -> None:
         if self._task is None:
@@ -897,12 +913,7 @@ class BrowserSessionCleanupCoordinator:
     async def _run_loop(self) -> None:
         while True:
             try:
-                expired_count = await self.poll_once()
-                if expired_count:
-                    self._logger.info(
-                        "Closed %s expired interactive browser session(s)",
-                        expired_count,
-                    )
+                await self.poll_once()
             except asyncio.CancelledError:
                 raise
             except Exception:

@@ -51,6 +51,10 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
             json={"text": "must-not-be-logged"},
         )
         assert paste_without_csrf.status_code == 403
+        activity_without_csrf = client.post(
+            "/api/v1/browser-sessions/unknown/activity",
+        )
+        assert activity_without_csrf.status_code == 403
         paste_unknown_session = client.post(
             "/api/v1/browser-sessions/unknown/type",
             headers={"X-AutoSign-CSRF": csrf_token},

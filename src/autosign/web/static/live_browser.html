@@ -65,6 +65,8 @@
       let remoteInputArmed = false;
       let csrfToken = null;
       let sendingText = false;
+      let activityRequestPending = false;
+      let lastActivityReportAt = 0;
 
       async function getCsrfToken() {
         if (csrfToken) return csrfToken;
@@ -79,6 +81,37 @@
         }
         csrfToken = auth.csrf_token;
         return csrfToken;
+      }
+
+      async function reportRemoteActivity() {
+        const now = Date.now();
+        if (!connected || activityRequestPending || now - lastActivityReportAt < 1000) return;
+        activityRequestPending = true;
+        lastActivityReportAt = now;
+        try {
+          const token = await getCsrfToken();
+          const response = await fetch(
+            `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/activity`,
+            {
+              method: "POST",
+              credentials: "same-origin",
+              headers: {"X-AutoSign-CSRF": token},
+            },
+          );
+          if (!response.ok) {
+            let message = `浏览器活动上报失败（${response.status}）`;
+            try {
+              const body = await response.json();
+              message = body.detail || message;
+            } catch {}
+            throw new Error(message);
+          }
+        } catch (error) {
+          status.textContent = error instanceof Error ? error.message : "浏览器活动上报失败。";
+          status.className = "error";
+        } finally {
+          activityRequestPending = false;
+        }
       }
 
       async function sendTextToRemote(text) {
@@ -128,11 +161,17 @@
 
       screen.addEventListener("pointerdown", () => {
         remoteInputArmed = true;
+        void reportRemoteActivity();
       }, true);
+
+      screen.addEventListener("wheel", () => {
+        void reportRemoteActivity();
+      }, {capture: true, passive: true});
 
       document.addEventListener("keydown", (event) => {
         if (event.target === pasteInput) return;
         if (!connected || !remoteInputArmed || !document.hasFocus()) return;
+        void reportRemoteActivity();
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
           // Keep noVNC from sending a second remote Ctrl+V. Do not prevent the
           // browser default here: it is what produces the following paste event.

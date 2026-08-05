@@ -806,6 +806,13 @@ def create_app(
         except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
             raise browser_error(exc) from exc
 
+    @app.post("/api/v1/browser-sessions/{session_id}/activity", status_code=204)
+    async def browser_activity(session_id: str) -> None:
+        try:
+            await browser_sessions.mark_activity(session_id)
+        except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
+            raise browser_error(exc) from exc
+
     @app.post("/api/v1/browser-sessions/{session_id}/click", status_code=204)
     async def browser_click(session_id: str, request: BrowserClick) -> None:
         try:

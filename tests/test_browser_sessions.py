@@ -574,6 +574,50 @@ async def test_browser_manager_closes_idle_session_without_new_request() -> None
 
 
 @pytest.mark.asyncio
+async def test_read_only_browser_polling_does_not_refresh_activity(caplog) -> None:
+    manager = BrowserSessionManager(timeout_seconds=10)
+    fake_browser = FakeBrowser()
+    manager._browser = fake_browser
+    info = await manager.start(
+        account_id="account-polled",
+        login_url="https://example.test/login",
+    )
+    unchanged_activity = datetime.now(UTC) - timedelta(seconds=5)
+    manager._sessions[info.id].last_activity = unchanged_activity
+
+    polled_info = await manager.get_info(info.id)
+    assert await manager.screenshot(info.id) == b"fake-png"
+    assert polled_info.last_activity == unchanged_activity
+    assert manager._sessions[info.id].last_activity == unchanged_activity
+
+    manager._sessions[info.id].last_activity = datetime.now(UTC) - timedelta(seconds=11)
+    with caplog.at_level("INFO", logger="uvicorn.error.autosign.browser_sessions"):
+        with pytest.raises(BrowserSessionNotFoundError, match="Expired browser session"):
+            await manager.get_info(info.id)
+    assert "Closed 1 expired interactive browser session(s)" in caplog.text
+    assert fake_browser.contexts[0].closed is True
+
+
+@pytest.mark.asyncio
+async def test_explicit_browser_activity_refreshes_idle_deadline() -> None:
+    manager = BrowserSessionManager(timeout_seconds=10)
+    fake_browser = FakeBrowser()
+    manager._browser = fake_browser
+    info = await manager.start(
+        account_id="account-active",
+        login_url="https://example.test/login",
+    )
+    previous_activity = datetime.now(UTC) - timedelta(seconds=9)
+    manager._sessions[info.id].last_activity = previous_activity
+
+    await manager.mark_activity(info.id)
+
+    assert manager._sessions[info.id].last_activity > previous_activity
+    assert await manager.cleanup_expired() == 0
+    await manager.close(info.id, save_state=False)
+
+
+@pytest.mark.asyncio
 async def test_browser_cleanup_coordinator_runs_and_stops() -> None:
     class CleanupManager:
         def __init__(self) -> None:
@@ -655,6 +699,7 @@ class FakeApiBrowserManager:
         self.closed = False
         self.login_complete = True
         self.started_storage_states: list[str | None] = []
+        self.activity_calls = 0
 
     async def start(
         self,
@@ -679,6 +724,17 @@ class FakeApiBrowserManager:
 
     async def screenshot(self, _session_id: str) -> bytes:
         return b"fake-png"
+
+    async def mark_activity(self, _session_id: str) -> None:
+        self.activity_calls += 1
+        self.info = BrowserSessionInfo(
+            id=self.info.id,
+            account_id=self.info.account_id,
+            url=self.info.url,
+            title=self.info.title,
+            created_at=self.info.created_at,
+            last_activity=datetime.now(UTC),
+        )
 
     async def click(self, _session_id: str, **_kwargs) -> None:
         pass
@@ -724,6 +780,10 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         screenshot = client.get(f"/api/v1/browser-sessions/{session_id}/screenshot")
         assert screenshot.content == b"fake-png"
         assert screenshot.headers["cache-control"] == "no-store, max-age=0"
+
+        activity = client.post(f"/api/v1/browser-sessions/{session_id}/activity")
+        assert activity.status_code == 204
+        assert browser_manager.activity_calls == 1
 
         closed = client.post(
             f"/api/v1/browser-sessions/{session_id}/close",
