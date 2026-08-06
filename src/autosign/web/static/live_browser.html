@@ -65,8 +65,27 @@
       let remoteInputArmed = false;
       let csrfToken = null;
       let sendingText = false;
+      let pasteShortcutActive = false;
       let activityRequestPending = false;
       let lastActivityReportAt = 0;
+
+      const remoteModifiers = [
+        [0xffe1, "ShiftLeft"],
+        [0xffe2, "ShiftRight"],
+        [0xffe3, "ControlLeft"],
+        [0xffe4, "ControlRight"],
+        [0xffe9, "AltLeft"],
+        [0xffea, "AltRight"],
+        [0xffeb, "MetaLeft"],
+        [0xffec, "MetaRight"],
+      ];
+
+      function releaseRemoteModifiers() {
+        if (!connected) return;
+        for (const [keysym, code] of remoteModifiers) {
+          rfb.sendKey(keysym, code, false);
+        }
+      }
 
       async function getCsrfToken() {
         if (csrfToken) return csrfToken;
@@ -122,35 +141,29 @@
         sendingText = true;
         pasteSend.disabled = true;
         try {
-          const token = await getCsrfToken();
-          const response = await fetch(
-            `/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/type`,
-            {
-              method: "POST",
-              credentials: "same-origin",
-              headers: {
-                "Content-Type": "application/json",
-                "X-AutoSign-CSRF": token,
-              },
-              body: JSON.stringify({text}),
-            },
-          );
-          if (!response.ok) {
-            let message = `发送失败（${response.status}）`;
-            try {
-              const body = await response.json();
-              message = body.detail || message;
-            } catch {}
-            throw new Error(message);
-          }
+          // Deferred Chromium sessions deliberately have no Playwright page
+          // while the user is logging in. Keep clipboard contents on the
+          // authenticated VNC connection instead of calling the /type API.
+          releaseRemoteModifiers();
+          rfb.clipboardPasteFrom(text);
+          await new Promise((resolve) => setTimeout(resolve, 120));
+          rfb.sendKey(0xffe3, "ControlLeft", true);
+          rfb.sendKey(0x0076, "KeyV", true);
+          rfb.sendKey(0x0076, "KeyV", false);
+          rfb.sendKey(0xffe3, "ControlLeft", false);
+          releaseRemoteModifiers();
+          void reportRemoteActivity();
           status.textContent = `已向远端输入框发送 ${text.length} 个字符。`;
           status.className = "ok";
+        } catch (error) {
+          releaseRemoteModifiers();
+          throw error;
         } finally {
           pasteInput.value = "";
           text = "";
           sendingText = false;
           pasteSend.disabled = false;
-          screen.focus();
+          rfb.focus();
         }
       }
 
@@ -173,15 +186,17 @@
         if (!connected || !remoteInputArmed || !document.hasFocus()) return;
         void reportRemoteActivity();
         if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
-          // Keep noVNC from sending a second remote Ctrl+V. Do not prevent the
-          // browser default here: it is what produces the following paste event.
+          // Keep noVNC from forwarding only half of Ctrl+V. The browser default
+          // remains enabled so the paste event can read clipboardData.
+          pasteShortcutActive = true;
           event.stopImmediatePropagation();
         }
       }, true);
 
       document.addEventListener("keyup", (event) => {
         if (event.target === pasteInput) return;
-        if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "v") {
+        if (pasteShortcutActive && event.key.toLowerCase() === "v") {
+          pasteShortcutActive = false;
           event.stopImmediatePropagation();
         }
       }, true);
@@ -190,6 +205,10 @@
         if (event.target === pasteInput) return;
         if (!connected || !remoteInputArmed || !document.hasFocus()) return;
         const text = event.clipboardData?.getData("text/plain") || "";
+        // Ctrl may already have reached noVNC before this event. Release all
+        // modifiers immediately, including when the clipboard is empty.
+        releaseRemoteModifiers();
+        pasteShortcutActive = false;
         if (!text) return;
         event.preventDefault();
         event.stopImmediatePropagation();
@@ -214,11 +233,13 @@
 
       rfb.addEventListener("connect", () => {
         connected = true;
+        releaseRemoteModifiers();
         status.textContent = "已连接。请在此完成登录和安全验证，完成后关闭本页。";
         status.className = "ok";
-        screen.focus();
+        rfb.focus();
       });
       rfb.addEventListener("disconnect", (event) => {
+        releaseRemoteModifiers();
         connected = false;
         remoteInputArmed = false;
         if (event.detail.clean) {
@@ -232,6 +253,12 @@
       rfb.addEventListener("credentialsrequired", () => {
         status.textContent = "实时浏览器服务配置异常：不应要求额外 VNC 密码。";
         status.className = "error";
+      });
+
+      window.addEventListener("blur", releaseRemoteModifiers);
+      window.addEventListener("pagehide", releaseRemoteModifiers);
+      document.addEventListener("visibilitychange", () => {
+        if (document.hidden) releaseRemoteModifiers();
       });
 
       document.querySelector("#close").addEventListener("click", () => window.close());

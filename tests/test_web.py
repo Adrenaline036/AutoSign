@@ -309,7 +309,7 @@ def test_vikacg_state_import_saves_only_after_validation(tmp_path: Path, monkeyp
         assert account_cache["accounts"][0]["refreshToken"] == "new-refresh"
 
 
-def test_live_browser_uses_csrf_protected_masked_paste() -> None:
+def test_live_browser_uses_vnc_clipboard_with_balanced_modifiers() -> None:
     live_browser = (
         Path(__file__).parents[1]
         / "src"
@@ -323,10 +323,19 @@ def test_live_browser_uses_csrf_protected_masked_paste() -> None:
     assert 'maxlength="4096" autocomplete="off"' in live_browser
     assert 'fetch("/api/v1/auth/status"' in live_browser
     assert '"X-AutoSign-CSRF": token' in live_browser
-    assert "/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/type" in live_browser
+    assert "/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/type" not in live_browser
+    assert "rfb.clipboardPasteFrom(text);" in live_browser
+    assert 'rfb.sendKey(0xffe3, "ControlLeft", true);' in live_browser
+    assert 'rfb.sendKey(0x0076, "KeyV", true);' in live_browser
+    assert 'rfb.sendKey(0x0076, "KeyV", false);' in live_browser
+    assert 'rfb.sendKey(0xffe3, "ControlLeft", false);' in live_browser
+    assert "function releaseRemoteModifiers()" in live_browser
+    assert 'window.addEventListener("blur", releaseRemoteModifiers);' in live_browser
+    assert 'window.addEventListener("pagehide", releaseRemoteModifiers);' in live_browser
+    assert 'document.addEventListener("visibilitychange"' in live_browser
+    assert live_browser.count("rfb.focus();") == 2
     assert 'document.addEventListener("paste"' in live_browser
     assert "event.stopImmediatePropagation()" in live_browser
-    assert "JSON.stringify({text})" in live_browser
     assert "status.textContent = `已向远端输入框发送 ${text.length} 个字符。`;" in live_browser
     assert "/api/v1/browser-sessions/${encodeURIComponent(sessionId)}/activity" in live_browser
     assert 'screen.addEventListener("pointerdown"' in live_browser
