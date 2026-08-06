@@ -16,6 +16,7 @@ class FakeYamiboBrowser:
         html: str = "<html><body>Discuz</body></html>",
         formhashes: list[str | None] | None = None,
         statuses: list[int] | None = None,
+        body_results: list[str | Exception] | None = None,
     ) -> None:
         self.formhash = formhash
         self.formhashes = formhashes if formhashes is not None else [formhash]
@@ -25,6 +26,8 @@ class FakeYamiboBrowser:
         self.statuses = statuses or [200]
         self.visits: list[tuple[str, str | None]] = []
         self.input_value_calls = 0
+        self.body_results = body_results
+        self.body_text_calls = 0
 
     async def goto(self, url: str, *, referrer: str | None = None) -> int:
         self.visits.append((url, referrer))
@@ -40,6 +43,14 @@ class FakeYamiboBrowser:
         return self.message or None
 
     async def body_text(self) -> str:
+        if self.body_results is not None:
+            index = min(self.body_text_calls, len(self.body_results) - 1)
+            self.body_text_calls += 1
+            result = self.body_results[index]
+            if isinstance(result, Exception):
+                raise result
+            return result
+        self.body_text_calls += 1
         return self.body or self.message
 
     async def html_content(self) -> str:
@@ -202,3 +213,116 @@ async def test_yamibo_repairs_mojibake_login_prompt() -> None:
 
     assert result.status is SignStatus.INTERACTION_REQUIRED
     assert result.details["result_excerpt"] == "请登录之后继续..."
+
+
+def _body_timeout() -> TimeoutError:
+    return TimeoutError(
+        'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
+    )
+
+
+@pytest.mark.asyncio
+async def test_yamibo_recovers_from_transient_body_timeout_after_waf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(YamiboPlugin, "BODY_READ_RETRY_SECONDS", 0)
+    browser = FakeYamiboBrowser(
+        formhash=None,
+        formhashes=[None] * YamiboPlugin.WAF_FORMHASH_ATTEMPTS,
+        message="",
+        html="<html><body>百合会签到页面</body></html>",
+        statuses=[405],
+        body_results=[_body_timeout(), "百合会签到页面"],
+    )
+
+    result = await YamiboPlugin().sign(
+        PluginContext(account_id="a1", account_label="百合会", browser=browser)
+    )
+
+    assert result.status is SignStatus.FAILED
+    assert result.details["stage"] == "read_formhash"
+    assert result.details["body_read_timeouts"] == 1
+    assert result.details["result_excerpt"] == "百合会签到页面"
+    assert browser.body_text_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_yamibo_reports_continuous_body_timeout_after_waf(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(YamiboPlugin, "BODY_READ_RETRY_SECONDS", 0)
+    browser = FakeYamiboBrowser(
+        formhash=None,
+        formhashes=[None] * YamiboPlugin.WAF_FORMHASH_ATTEMPTS,
+        message="",
+        html="<html><body></body></html>",
+        statuses=[405],
+        body_results=[_body_timeout()] * YamiboPlugin.BODY_READ_ATTEMPTS,
+    )
+
+    result = await YamiboPlugin().sign(
+        PluginContext(account_id="a1", account_label="百合会", browser=browser)
+    )
+
+    assert result.status is SignStatus.FAILED
+    assert result.details == {
+        "initial_http_status": 405,
+        "formhash_attempts": YamiboPlugin.WAF_FORMHASH_ATTEMPTS,
+        "stage": "read_page_body",
+        "body_read_timeouts": YamiboPlugin.BODY_READ_ATTEMPTS,
+    }
+
+
+@pytest.mark.asyncio
+async def test_yamibo_recovers_from_transient_body_timeout_after_submit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(YamiboPlugin, "BODY_READ_RETRY_SECONDS", 0)
+    browser = FakeYamiboBrowser(
+        formhash="token",
+        message="",
+        body_results=[_body_timeout(), "签到成功！获得 2 对象"],
+    )
+
+    result = await YamiboPlugin().sign(
+        PluginContext(account_id="a1", account_label="百合会", browser=browser)
+    )
+
+    assert result.status is SignStatus.SUCCESS
+    assert result.verified is True
+    assert result.details["body_read_timeouts"] == 1
+    assert browser.body_text_calls == 2
+
+
+@pytest.mark.asyncio
+async def test_yamibo_reports_continuous_body_timeout_after_submit(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    monkeypatch.setattr(YamiboPlugin, "BODY_READ_RETRY_SECONDS", 0)
+    browser = FakeYamiboBrowser(
+        formhash="token",
+        message="",
+        body_results=[_body_timeout()] * YamiboPlugin.BODY_READ_ATTEMPTS,
+    )
+
+    result = await YamiboPlugin().sign(
+        PluginContext(account_id="a1", account_label="百合会", browser=browser)
+    )
+
+    assert result.status is SignStatus.FAILED
+    assert result.details["stage"] == "read_sign_result"
+    assert result.details["body_read_timeouts"] == YamiboPlugin.BODY_READ_ATTEMPTS
+
+
+@pytest.mark.asyncio
+async def test_yamibo_does_not_hide_unrelated_body_error() -> None:
+    browser = FakeYamiboBrowser(
+        formhash="token",
+        message="",
+        body_results=[RuntimeError("browser disconnected")],
+    )
+
+    with pytest.raises(RuntimeError, match="browser disconnected"):
+        await YamiboPlugin().sign(
+            PluginContext(account_id="a1", account_label="百合会", browser=browser)
+        )
