@@ -1021,6 +1021,7 @@ class FakeApiBrowserManager:
         self.closed = False
         self.login_complete = True
         self.started_storage_states: list[str | None] = []
+        self.started_login_urls: list[str] = []
         self.activity_calls = 0
         self.focus_calls = 0
 
@@ -1028,9 +1029,11 @@ class FakeApiBrowserManager:
         self,
         *,
         account_id: str,
+        login_url: str,
         storage_state_json: str | None = None,
         **_kwargs,
     ) -> BrowserSessionInfo:
+        self.started_login_urls.append(login_url)
         self.started_storage_states.append(storage_state_json)
         self.info = BrowserSessionInfo(
             id=self.info.id,
@@ -1106,6 +1109,7 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         assert started.status_code == 200
         session_id = started.json()["id"]
         assert started.json()["live_url"] == f"/browser-sessions/{session_id}/live"
+        assert browser_manager.started_login_urls[-1].endswith("/demo-login")
 
         standalone = client.get(started.json()["live_url"])
         assert standalone.status_code == 200
@@ -1148,6 +1152,22 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         assert browser_manager.started_storage_states[-1] is None
         client.post(
             f"/api/v1/browser-sessions/{clean.json()['id']}/close",
+            json={"save_state": False},
+        )
+
+        vikacg_account = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "vikacg", "label": "VikACG 登录入口测试"},
+        ).json()
+        vikacg_session = client.post(
+            f"/api/v1/accounts/{vikacg_account['id']}/browser-session?clean=true"
+        )
+        assert vikacg_session.status_code == 200
+        assert browser_manager.started_login_urls[-1] == (
+            "https://www.vikacg.com/wallet/mission"
+        )
+        client.post(
+            f"/api/v1/browser-sessions/{vikacg_session.json()['id']}/close",
             json={"save_state": False},
         )
 

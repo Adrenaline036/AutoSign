@@ -67,14 +67,17 @@ class VikacgPlugin(AutoSignPlugin):
     manifest = PluginManifest(
         id="vikacg",
         name="VikACG 维咔",
-        version="0.3.0",
+        version="0.3.1",
         description="使用已保存的登录状态优先调用 VikACG 官方接口签到，并保留页面后备流程。",
         domains=["www.vikacg.com", "vikacg.com"],
-        login_url="https://www.vikacg.com/sign",
+        # Start from the same page that VikACG uses for its daily mission.  Its
+        # own "立即登录" entry preserves the redirect and avoids depending on
+        # the less reliable standalone /sign SPA route.
+        login_url=SIGN_URL,
         login_success_selectors=(
             'a[href="/message"]',
             'a[href="/account"]',
-            'main button:has-text("立即签到")',
+            'button:has-text("立即签到")',
         ),
         capabilities={
             PluginCapability.INTERACTIVE_LOGIN,

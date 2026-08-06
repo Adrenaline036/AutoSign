@@ -9,6 +9,12 @@ from autosign.plugin_sdk import BrowserResponse, PluginContext, SignStatus
 from autosign.plugins.vikacg import VikacgImportError, VikacgPlugin
 
 
+def test_vikacg_interactive_login_starts_from_mission_page() -> None:
+    assert VikacgPlugin.manifest.version == "0.3.1"
+    assert VikacgPlugin.manifest.login_url == VikacgPlugin.SIGN_URL
+    assert VikacgPlugin.manifest.login_url.endswith("/wallet/mission")
+
+
 class FakeVikacgBrowser:
     def __init__(
         self,
