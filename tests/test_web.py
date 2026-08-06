@@ -113,6 +113,10 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert '<dialog id="schedule-dialog"' in dashboard.text
     assert '<dialog id="channel-dialog"' in dashboard.text
     assert '<dialog id="channel-assignment-dialog"' in dashboard.text
+    assert 'class="browser-dialog"' in dashboard.text
+    assert 'id="channel-assignment-list" class="channel-assignment-columns"' in dashboard.text
+    assert '.channel-assignment-columns { display: grid;' in dashboard.text
+    assert 'element("section", "channel-assignment-column")' in dashboard.text
     assert '<dialog id="delete-channel-dialog"' in dashboard.text
     assert 'id="channel-create"' in dashboard.text
     assert 'id="demo-test"' in dashboard.text
@@ -134,11 +138,11 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert '<dialog id="vikacg-import-dialog"' in dashboard.text
     assert '.recovery-options { display: grid; grid-template-columns: 1fr;' in dashboard.text
     assert '>尝试导入 accountStore3</button>' in dashboard.text
-    assert "找不到该记录不代表操作错误" in dashboard.text
     assert "不要选择 Cookies" in dashboard.text
+    assert "本地存储空间 / Local Storage" in dashboard.text
+    assert "当前网页版通常保存在 Local Storage" in dashboard.text
     assert "localforage → keyvaluepairs" in dashboard.text
     assert "accountStore3 是右侧记录表中的 Key" in dashboard.text
-    assert "Name、Domain、Path" in dashboard.text
     assert 'id="browser-screenshot"' not in dashboard.text
     assert 'id="browser-live-panel"' in dashboard.text
     assert 'id="browser-live-open"' in dashboard.text

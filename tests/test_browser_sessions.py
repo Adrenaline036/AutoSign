@@ -315,6 +315,34 @@ async def test_automation_client_reads_and_writes_indexed_db_value() -> None:
     }
 
 
+@pytest.mark.asyncio
+async def test_automation_client_reads_and_writes_local_storage_value() -> None:
+    context = FakeContext()
+    context.indexed_state = {
+        "cookies": [],
+        "origins": [
+            {
+                "origin": "https://www.vikacg.com",
+                "localStorage": [
+                    {"name": "accountStore3", "value": "local-saved-state"}
+                ],
+                "indexedDB": [],
+            }
+        ],
+    }
+    client = PlaywrightAutomationClient(context.page)
+
+    assert (
+        await client.storage_value("https://www.vikacg.com", "accountStore3")
+        == "local-saved-state"
+    )
+    assert await client.write_storage_value("accountStore3", "local-updated") is True
+    assert context.page.storage_write == {
+        "key": "accountStore3",
+        "value": "local-updated",
+    }
+
+
 def test_normalize_storage_state_repairs_falsey_indexeddb_keys() -> None:
     state = {
         "cookies": [],

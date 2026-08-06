@@ -296,11 +296,14 @@ class PlaywrightAutomationClient:
         )
 
     async def storage_value(self, origin: str, key: str) -> object | None:
-        """Read a restored IndexedDB value without navigating the page."""
+        """Read a restored localStorage or IndexedDB value without navigation."""
         state = await self.page.context.storage_state(indexed_db=True)
         for origin_state in state.get("origins", []):
             if origin_state.get("origin") != origin:
                 continue
+            for item in origin_state.get("localStorage", []):
+                if item.get("name") == key:
+                    return item.get("value")
             for database in origin_state.get("indexedDB", []):
                 for store in database.get("stores", []):
                     for record in store.get("records", []):
@@ -309,10 +312,17 @@ class PlaywrightAutomationClient:
         return None
 
     async def write_storage_value(self, key: str, value: object) -> bool:
-        """Replace an existing out-of-line IndexedDB value on the current origin."""
+        """Replace an existing localStorage or IndexedDB value on the current origin."""
         return bool(
             await self.page.evaluate(
                 """async ({key, value}) => {
+                    if (localStorage.getItem(key) !== null) {
+                        localStorage.setItem(
+                            key,
+                            typeof value === "string" ? value : JSON.stringify(value),
+                        );
+                        return true;
+                    }
                     for (const databaseInfo of await indexedDB.databases()) {
                         if (!databaseInfo.name) continue;
                         const database = await new Promise((resolve, reject) => {

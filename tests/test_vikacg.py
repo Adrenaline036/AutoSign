@@ -10,7 +10,7 @@ from autosign.plugins.vikacg import VikacgImportError, VikacgPlugin
 
 
 def test_vikacg_interactive_login_starts_from_mission_page() -> None:
-    assert VikacgPlugin.manifest.version == "0.3.1"
+    assert VikacgPlugin.manifest.version == "0.3.2"
     assert VikacgPlugin.manifest.login_url == VikacgPlugin.SIGN_URL
     assert VikacgPlugin.manifest.login_url.endswith("/wallet/mission")
 
@@ -188,6 +188,56 @@ def test_vikacg_import_merges_only_credentials_into_existing_state() -> None:
     assert cache["accounts"][0]["basic"] == {"name": "keep-profile"}
     assert "untrusted" not in cache["accounts"][0]
     assert records[1]["value"] == "keep-persona"
+    assert token is True
+    assert refresh_token is True
+
+
+def test_vikacg_import_supports_current_local_storage_account_store() -> None:
+    existing_cache = {
+        "accounts": [
+            {
+                "id": 42,
+                "token": "old-token",
+                "refreshToken": "old-refresh",
+                "basic": {"name": "keep-profile"},
+            }
+        ],
+        "currentID": 42,
+        "currentConfig": {"keep": True},
+    }
+    state = {
+        "cookies": [],
+        "origins": [
+            {
+                "origin": VikacgPlugin.ORIGIN,
+                "localStorage": [
+                    {
+                        "name": VikacgPlugin.ACCOUNT_STORAGE_KEY,
+                        "value": json.dumps(existing_cache),
+                    }
+                ],
+                "indexedDB": [],
+            }
+        ],
+    }
+    imported = json.dumps(
+        {
+            "accounts": [
+                {"id": 42, "token": "new-token", "refreshToken": "new-refresh"}
+            ],
+            "currentID": 42,
+        }
+    )
+
+    candidate_json, token, refresh_token = VikacgPlugin.prepare_imported_storage_state(
+        json.dumps(state), imported
+    )
+
+    saved = json.loads(candidate_json)["origins"][0]["localStorage"][0]
+    cache = json.loads(saved["value"])
+    assert cache["accounts"][0]["token"] == "new-token"
+    assert cache["accounts"][0]["refreshToken"] == "new-refresh"
+    assert cache["accounts"][0]["basic"] == {"name": "keep-profile"}
     assert token is True
     assert refresh_token is True
 

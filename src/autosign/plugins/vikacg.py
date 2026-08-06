@@ -67,7 +67,7 @@ class VikacgPlugin(AutoSignPlugin):
     manifest = PluginManifest(
         id="vikacg",
         name="VikACG 维咔",
-        version="0.3.1",
+        version="0.3.2",
         description="使用已保存的登录状态优先调用 VikACG 官方接口签到，并保留页面后备流程。",
         domains=["www.vikacg.com", "vikacg.com"],
         # Start from the same page that VikACG uses for its daily mission.  Its
@@ -293,6 +293,12 @@ class VikacgPlugin(AutoSignPlugin):
         for origin in state.get("origins", []):
             if not isinstance(origin, dict) or origin.get("origin") != cls.ORIGIN:
                 continue
+            for item in origin.get("localStorage", []):
+                if (
+                    isinstance(item, dict)
+                    and item.get("name") == cls.ACCOUNT_STORAGE_KEY
+                ):
+                    records.append(item)
             for database in origin.get("indexedDB", []):
                 if not isinstance(database, dict):
                     continue

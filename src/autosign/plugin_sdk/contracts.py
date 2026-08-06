@@ -123,11 +123,11 @@ class BrowserAutomation(Protocol):
         ...
 
     async def storage_value(self, origin: str, key: str) -> Any | None:
-        """Read one restored IndexedDB record by its out-of-line key."""
+        """Read one restored localStorage entry or IndexedDB record."""
         ...
 
     async def write_storage_value(self, key: str, value: Any) -> bool:
-        """Replace one IndexedDB record on the current page origin."""
+        """Replace one localStorage entry or IndexedDB record on the current origin."""
         ...
 
 

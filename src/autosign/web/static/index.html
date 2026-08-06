@@ -108,6 +108,11 @@
         background: #0a1425; cursor: pointer; }
       .channel-choice input { width: 18px; height: 18px; min-width: 0; }
       .channel-choice-list { display: grid; gap: 10px; }
+      .channel-assignment-columns { display: grid;
+        grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+      .channel-assignment-column { min-width: 0; padding: 14px;
+        border: 1px solid #293e5e; border-radius: 14px; background: #0b1627; }
+      .channel-assignment-column > h3 { margin-bottom: 12px; color: #c9d8ec; }
       .channel-form-section { display: grid; gap: 16px; padding: 14px;
         border: 1px solid #293e5e; border-radius: 12px; background: #0b1627; }
       .channel-form-section[hidden] { display: none; }
@@ -185,7 +190,7 @@
       .browser-live-panel h3, .browser-live-panel p { margin: 0; }
       .browser-live-panel .login-action { justify-self: start; }
       @media (max-width: 760px) {
-        .channel-columns { grid-template-columns: 1fr; }
+        .channel-columns, .channel-assignment-columns { grid-template-columns: 1fr; }
         .history-item { grid-template-columns: 1fr auto; }
         .history-message { grid-column: 1 / -1; white-space: normal; }
         .backup-summary-row.secondary { grid-template-columns: 1fr; }
@@ -442,7 +447,8 @@
       </form>
     </dialog>
 
-    <dialog id="channel-assignment-dialog" aria-labelledby="channel-assignment-title">
+    <dialog id="channel-assignment-dialog" class="browser-dialog"
+      aria-labelledby="channel-assignment-title">
       <form id="channel-assignment-form">
         <div class="modal-header">
           <div>
@@ -454,7 +460,7 @@
         </div>
         <div class="modal-body">
           <p class="muted">勾选要分配给此账户的推送渠道。一个渠道可以服务多个账户。</p>
-          <div id="channel-assignment-list" class="channel-choice-list"></div>
+          <div id="channel-assignment-list" class="channel-assignment-columns"></div>
           <div class="modal-actions">
             <button id="channel-assignment-cancel" class="secondary" type="button">取消</button>
             <button class="push-action" type="submit">保存分配</button>
@@ -526,17 +532,14 @@
             <summary><strong>如何从 Chrome 复制 accountStore3</strong></summary>
             <ol class="muted">
               <li>在已经登录 VikACG 的那个 Chrome 标签页按 F12，打开“应用 / Application”。</li>
-              <li><strong>不要选择 Cookies</strong>；点击左侧“存储 / Storage”下
-                “IndexedDB”文字左边的小三角，将其展开。</li>
-              <li>依次展开 VikACG 的来源、数据库和对象存储。数据库名称可能不是
-                accountStore3；当前常见路径是“localforage → keyvaluepairs”，但应以实际页面为准。
-                <strong>accountStore3 是右侧记录表中的 Key</strong>。</li>
-              <li>正确页面的右侧表格会显示 Key、Value 等列；如果看到 Name、Domain、Path、
-                Expires 等列，说明仍停留在 Cookies。</li>
-              <li>在右侧找到 Key 严格等于 accountStore3 的一行，复制这一行完整的 Value；
-                不要复制省略号，也不要复制其他记录。</li>
-              <li>若 IndexedDB 下没有 VikACG：先刷新已登录的 VikACG 页面，再点击开发者工具中
-                IndexedDB 区域的刷新按钮，然后重新展开。</li>
+              <li>先展开“存储 / Storage”下的 <strong>本地存储空间 / Local Storage</strong>，
+                选择 `https://www.vikacg.com`；<strong>不要选择 Cookies</strong>。</li>
+              <li>在右侧找到键名严格等于 <strong>accountStore3</strong> 的一行，复制完整 Value；
+                当前网页版通常保存在 Local Storage。</li>
+              <li>旧版会话也可能存放在 IndexedDB 的“localforage → keyvaluepairs”中；
+                这时 accountStore3 是右侧记录表中的 Key，而不是数据库名称。</li>
+              <li>不要复制省略号、Cookie 或其他网站的数据。两个位置都没有时，
+                请取消并重新使用实时浏览器登录。</li>
             </ol>
           </details>
           <label>完整 accountStore3 Value
@@ -1106,26 +1109,38 @@
         assignmentAccountId = account.id;
         document.querySelector("#channel-assignment-account").textContent =
           `账户：${account.label}`;
-        if (!state.notificationChannels.length) {
-          channelAssignmentList.replaceChildren(
-            element("p", "muted", "尚未创建推送渠道，请先在主页面创建。")
+        function assignmentChoice(channel) {
+          const choice = element("label", "channel-choice");
+          const checkbox = document.createElement("input");
+          checkbox.type = "checkbox";
+          checkbox.value = channel.id;
+          checkbox.checked = account.notification_channel_ids.includes(channel.id);
+          const copy = element("span");
+          copy.append(
+            element("strong", "", channel.name),
+            element("div", "meta", channelTypeText(channel.channel_type))
           );
-        } else {
-          channelAssignmentList.replaceChildren(...state.notificationChannels.map((channel) => {
-            const choice = element("label", "channel-choice");
-            const checkbox = document.createElement("input");
-            checkbox.type = "checkbox";
-            checkbox.value = channel.id;
-            checkbox.checked = account.notification_channel_ids.includes(channel.id);
-            const copy = element("span");
-            copy.append(
-              element("strong", "", channel.name),
-              element("div", "meta", channelTypeText(channel.channel_type))
-            );
-            choice.append(checkbox, copy);
-            return choice;
-          }));
+          choice.append(checkbox, copy);
+          return choice;
         }
+        const groups = [
+          {type: "uptime_kuma", title: "Uptime Kuma"},
+          {type: "napcat", title: "NapCat QQ"}
+        ].map(({type, title}) => {
+          const column = element("section", "channel-assignment-column");
+          const list = element("div", "channel-choice-list");
+          const channels = state.notificationChannels.filter(
+            (channel) => channel.channel_type === type
+          );
+          list.replaceChildren(...(
+            channels.length
+              ? channels.map(assignmentChoice)
+              : [element("p", "muted", `还没有 ${title} 渠道。`)]
+          ));
+          column.append(element("h3", "", title), list);
+          return column;
+        });
+        channelAssignmentList.replaceChildren(...groups);
         channelAssignmentDialog.showModal();
       }
 
