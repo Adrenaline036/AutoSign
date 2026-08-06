@@ -66,7 +66,7 @@ class SignResult(BaseModel):
 
 @dataclass(frozen=True, slots=True)
 class BrowserResponse:
-    """Small, serializable response returned by browser-origin form requests."""
+    """Small, serializable response returned by browser-origin HTTP requests."""
 
     status: int
     url: str
@@ -110,6 +110,24 @@ class BrowserAutomation(Protocol):
         url: str,
         data: Mapping[str, str],
     ) -> BrowserResponse:
+        ...
+
+    async def post_json(
+        self,
+        url: str,
+        data: Mapping[str, Any],
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> BrowserResponse:
+        """POST JSON through the browser context without rendering a site page."""
+        ...
+
+    async def storage_value(self, origin: str, key: str) -> Any | None:
+        """Read one restored IndexedDB record by its out-of-line key."""
+        ...
+
+    async def write_storage_value(self, key: str, value: Any) -> bool:
+        """Replace one IndexedDB record on the current page origin."""
         ...
 
 

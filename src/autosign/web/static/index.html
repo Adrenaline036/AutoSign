@@ -47,10 +47,12 @@
       .meta { color: #8495b1; font-size: 0.88rem; }
       .row { display: flex; gap: 12px; align-items: end; flex-wrap: wrap; }
       label { display: grid; gap: 7px; color: #b9c7dc; font-size: 0.92rem; }
-      input, select {
+      input, select, textarea {
         min-width: 210px; padding: 11px 12px; border: 1px solid #304564; border-radius: 10px;
         background: #0a1425; color: #edf3fb; font: inherit;
       }
+      textarea { width: 100%; min-height: 150px; resize: vertical; }
+      .secret-json-input { width: 100%; }
       button {
         border: 0; border-radius: 10px; padding: 10px 14px;
         background: linear-gradient(135deg, #7180ff, #5968dc);
@@ -110,6 +112,15 @@
         border: 1px solid #293e5e; border-radius: 12px; background: #0b1627; }
       .channel-form-section[hidden] { display: none; }
       .delete-copy { margin: 0; }
+      .recovery-options { display: grid; grid-template-columns: 1fr; gap: 12px; }
+      .recovery-option { display: grid; align-content: start; gap: 8px; padding: 16px;
+        border: 1px solid #304564; border-radius: 14px; background: #0b1627; }
+      .recovery-option p { margin: 0; }
+      .recovery-import-panel { display: grid; gap: 12px; }
+      .recovery-warning { padding: 10px 12px; border: 1px solid #725c2b;
+        border-radius: 10px; background: #3f321a; color: #ffdc8c; }
+      .form-error { min-height: 22px; margin: 0; color: #ffabb5; }
+      .masked-field-actions { display: flex; justify-content: flex-end; margin-top: -6px; }
       .delete-confirm-wrap { margin-top: -8px; }
       .schedule-meta { display: flex; flex-wrap: wrap; gap: 8px 32px; min-height: 24px;
         margin-top: 12px; color: #a8b8d1; font-size: 0.9rem; }
@@ -165,8 +176,7 @@
       .modal-actions { display: flex; justify-content: flex-end; gap: 10px; margin-top: 4px; }
       .confirmation-name { display: block; margin-top: 7px; color: #f0c2ca;
         font-weight: 700; overflow-wrap: anywhere; }
-      .browser-dialog { width: min(1180px, calc(100% - 24px)); max-width: none; }
-      .browser-dialog.live-mode { width: min(660px, calc(100% - 24px)); }
+      .browser-dialog { width: min(660px, calc(100% - 24px)); max-width: none; }
       .browser-modal-body { padding-top: 10px; }
       .browser-live-panel { display: grid; gap: 14px; padding: 22px;
         border: 1px solid #315277; border-radius: 14px;
@@ -174,32 +184,6 @@
       .browser-live-panel[hidden] { display: none; }
       .browser-live-panel h3, .browser-live-panel p { margin: 0; }
       .browser-live-panel .login-action { justify-self: start; }
-      .browser-toolbar { display: flex; align-items: center; gap: 10px; flex-wrap: wrap;
-        padding: 10px 12px; border: 1px solid #2a4060; border-radius: 12px;
-        background: #0a1425; }
-      .browser-toolbar .browser-location { flex: 1; min-width: 260px; overflow: hidden;
-        color: #91a6c5; text-overflow: ellipsis; white-space: nowrap; font-size: 0.88rem; }
-      .browser-stage { position: relative; width: 100%; aspect-ratio: 16 / 10;
-        overflow: hidden; border: 2px solid #31496d; border-radius: 12px; background: #050a13;
-        outline: none; }
-      .browser-stage:focus-within { border-color: #7c8aff; box-shadow: 0 0 0 3px #6d7cff33; }
-      #browser-screenshot { display: block; width: 100%; height: 100%; object-fit: contain;
-        cursor: default; user-select: none; }
-      .browser-loading { position: absolute; inset: 0; display: grid; place-items: center;
-        color: #90a4c3; pointer-events: none; }
-      .browser-loading[hidden] { display: none; }
-      .browser-keyboard-capture {
-        position: absolute; width: 1px; height: 1px; left: 50%; bottom: 0;
-        opacity: 0; pointer-events: none; padding: 0; border: 0; min-width: 0;
-      }
-      .browser-focus-hint {
-        position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%);
-        padding: 8px 12px; border: 1px solid #435c82; border-radius: 999px;
-        background: #081426e8; color: #c8d6ea; font-size: .85rem; pointer-events: none;
-        transition: opacity .15s;
-      }
-      .browser-stage:focus-within .browser-focus-hint { opacity: 0; }
-      .browser-help { margin: 0; font-size: 0.88rem; }
       @media (max-width: 760px) {
         .channel-columns { grid-template-columns: 1fr; }
         .history-item { grid-template-columns: 1fr auto; }
@@ -497,6 +481,79 @@
       </div>
     </dialog>
 
+    <dialog id="vikacg-recovery-dialog" aria-labelledby="vikacg-recovery-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="vikacg-recovery-title">VikACG 登录与恢复</h2>
+          <p id="vikacg-recovery-account" class="muted"></p>
+        </div>
+        <button id="vikacg-recovery-close" class="icon-button" type="button"
+          aria-label="关闭 VikACG 登录与恢复弹窗">×</button>
+      </div>
+      <div class="modal-body">
+        <div class="recovery-options">
+          <div class="recovery-option">
+            <h3>实时浏览器登录</h3>
+            <p class="muted">适合首次登录，或网站可以正常通过安全验证时使用。</p>
+            <button id="vikacg-open-browser" class="login-action" type="button">打开实时浏览器</button>
+          </div>
+          <div class="recovery-option">
+            <h3>高级恢复（可选）</h3>
+            <p class="muted">仅当 Chrome 的 IndexedDB 中确实存在 accountStore3 时使用；
+              找不到该记录不代表操作错误，请改用上方系统 Chrome 登录。</p>
+            <button id="vikacg-show-import" class="push-action" type="button">尝试导入 accountStore3</button>
+          </div>
+        </div>
+      </div>
+    </dialog>
+
+    <dialog id="vikacg-import-dialog" aria-labelledby="vikacg-import-title">
+      <div class="modal-header">
+        <div>
+          <h2 id="vikacg-import-title">导入 accountStore3</h2>
+          <p id="vikacg-import-account" class="muted"></p>
+        </div>
+        <button id="vikacg-import-close" class="icon-button" type="button"
+          aria-label="关闭 accountStore3 导入弹窗">×</button>
+      </div>
+      <div class="modal-body">
+        <form id="vikacg-import-form" class="recovery-import-panel">
+          <div class="recovery-warning">
+            仅在 HTTPS 或可信 VPN/LAN 中使用。内容包含登录令牌；AutoSign 不会回显，也不会写入日志。
+          </div>
+          <details open>
+            <summary><strong>如何从 Chrome 复制 accountStore3</strong></summary>
+            <ol class="muted">
+              <li>在已经登录 VikACG 的那个 Chrome 标签页按 F12，打开“应用 / Application”。</li>
+              <li><strong>不要选择 Cookies</strong>；点击左侧“存储 / Storage”下
+                “IndexedDB”文字左边的小三角，将其展开。</li>
+              <li>依次展开 VikACG 的来源、数据库和对象存储。数据库名称可能不是
+                accountStore3；当前常见路径是“localforage → keyvaluepairs”，但应以实际页面为准。
+                <strong>accountStore3 是右侧记录表中的 Key</strong>。</li>
+              <li>正确页面的右侧表格会显示 Key、Value 等列；如果看到 Name、Domain、Path、
+                Expires 等列，说明仍停留在 Cookies。</li>
+              <li>在右侧找到 Key 严格等于 accountStore3 的一行，复制这一行完整的 Value；
+                不要复制省略号，也不要复制其他记录。</li>
+              <li>若 IndexedDB 下没有 VikACG：先刷新已登录的 VikACG 页面，再点击开发者工具中
+                IndexedDB 区域的刷新按钮，然后重新展开。</li>
+            </ol>
+          </details>
+          <label>完整 accountStore3 Value
+            <input id="vikacg-import-value" class="secret-json-input" maxlength="65536"
+              type="password" autocomplete="off" autocapitalize="off" spellcheck="false" required>
+          </label>
+          <div class="masked-field-actions">
+            <button id="vikacg-import-toggle" class="secondary" type="button">显示内容</button>
+          </div>
+          <p id="vikacg-import-error" class="form-error" role="alert"></p>
+          <div class="modal-actions">
+            <button id="vikacg-import-cancel" class="secondary" type="button">取消导入</button>
+            <button id="vikacg-import-submit" class="push-action" type="submit">验证导入内容</button>
+          </div>
+        </form>
+      </div>
+    </dialog>
+
     <dialog id="browser-login-dialog" class="browser-dialog" aria-labelledby="browser-dialog-title">
       <div class="modal-header">
         <div>
@@ -507,31 +564,18 @@
           aria-label="关闭浏览器登录弹窗">×</button>
       </div>
       <div class="modal-body browser-modal-body">
-        <div class="browser-toolbar">
-          <span id="browser-page-title" class="badge">正在启动浏览器…</span>
-          <span id="browser-location" class="browser-location"></span>
-          <button id="browser-refresh" class="secondary" type="button">刷新画面</button>
-        </div>
-        <div id="browser-live-panel" class="browser-live-panel" hidden>
-          <h3>实时浏览器已在独立标签中打开</h3>
-          <p class="muted">请在新标签中直接完成登录和网站安全验证。完成后关闭该标签，
+        <div id="browser-live-panel" class="browser-live-panel">
+          <h3 id="browser-page-title">正在启动实时浏览器…</h3>
+          <p id="browser-web-help" class="muted">请在新标签中直接完成登录和网站安全验证。完成后关闭该标签，
             回到这里点击“登录完成，检测并保存”。</p>
+          <p id="browser-native-help" class="muted" hidden>普通 Chrome 登录窗口已经打开，
+            AutoSign 此时尚未连接浏览器。请直接在该窗口中使用鼠标和键盘完成登录及网站
+            安全验证；不要提前关闭 Chrome，完成后回到这里点击“登录完成，检测并保存”，
+            AutoSign 才会连接并捕获登录状态。</p>
           <button id="browser-live-open" class="login-action" type="button">
             打开或重新打开实时浏览器
           </button>
         </div>
-        <div id="browser-stage" class="browser-stage" tabindex="-1"
-          role="application" aria-label="目标网站浏览器">
-          <img id="browser-screenshot" alt="远程浏览器画面" draggable="false">
-          <input id="browser-keyboard-capture" class="browser-keyboard-capture" type="text"
-            autocomplete="off" autocapitalize="off" spellcheck="false"
-            aria-label="目标网站键盘输入">
-          <div id="browser-loading" class="browser-loading">正在加载 Chromium 登录画面…</div>
-          <div class="browser-focus-hint">点击网站中的输入框，然后直接使用键盘</div>
-        </div>
-        <p id="browser-help" class="muted browser-help">这是插件指定的真实登录页面。点击网站中的输入框后，
-          可直接输入、粘贴并使用 Tab、Enter、退格和方向键。输入内容只送到当前临时
-          浏览器，不写入日志；检测到登录成功后才会加密保存 Cookie 和 localStorage。</p>
         <div class="modal-actions">
           <button id="browser-discard" class="secondary" type="button">放弃并关闭</button>
           <button id="browser-save" type="button">登录完成，检测并保存</button>
@@ -624,18 +668,20 @@
       const channelAssignmentForm = document.querySelector("#channel-assignment-form");
       const channelAssignmentList = document.querySelector("#channel-assignment-list");
       const deleteChannelDialog = document.querySelector("#delete-channel-dialog");
+      const vikacgRecoveryDialog = document.querySelector("#vikacg-recovery-dialog");
+      const vikacgRecoveryAccount = document.querySelector("#vikacg-recovery-account");
+      const vikacgImportDialog = document.querySelector("#vikacg-import-dialog");
+      const vikacgImportAccount = document.querySelector("#vikacg-import-account");
+      const vikacgImportForm = document.querySelector("#vikacg-import-form");
+      const vikacgImportValue = document.querySelector("#vikacg-import-value");
+      const vikacgImportError = document.querySelector("#vikacg-import-error");
+      const vikacgImportSubmit = document.querySelector("#vikacg-import-submit");
       const browserDialog = document.querySelector("#browser-login-dialog");
       const browserDialogAccount = document.querySelector("#browser-dialog-account");
       const browserPageTitle = document.querySelector("#browser-page-title");
-      const browserLocation = document.querySelector("#browser-location");
-      const browserStage = document.querySelector("#browser-stage");
-      const browserLivePanel = document.querySelector("#browser-live-panel");
+      const browserWebHelp = document.querySelector("#browser-web-help");
+      const browserNativeHelp = document.querySelector("#browser-native-help");
       const browserLiveOpen = document.querySelector("#browser-live-open");
-      const browserRefresh = document.querySelector("#browser-refresh");
-      const browserHelp = document.querySelector("#browser-help");
-      const browserScreenshot = document.querySelector("#browser-screenshot");
-      const browserKeyboardCapture = document.querySelector("#browser-keyboard-capture");
-      const browserLoading = document.querySelector("#browser-loading");
       const browserSave = document.querySelector("#browser-save");
       const browserDiscard = document.querySelector("#browser-discard");
       let deleteAccountId = null;
@@ -644,13 +690,12 @@
       let editingChannelId = null;
       let assignmentAccountId = null;
       let deletingChannelId = null;
+      let vikacgRecoveryTarget = null;
+      let vikacgImportTarget = null;
+      let vikacgImportConfirmed = false;
       let activeBrowserSession = null;
       let browserPollTimer = null;
       let browserClosing = false;
-      let browserInputQueue = Promise.resolve();
-      let browserFrameRequestActive = false;
-      let browserFrameObjectUrl = null;
-      let browserLiveMode = false;
       let activeBrowserWindow = null;
 
       function showNotice(message, error = false) {
@@ -667,10 +712,14 @@
         if (!["GET", "HEAD", "OPTIONS"].includes(method) && csrfToken) {
           headers["X-AutoSign-CSRF"] = csrfToken;
         }
-        const response = await fetch(path, {
-          ...options,
-          headers
-        });
+        let response;
+        try {
+          response = await fetch(path, {...options, headers});
+        } catch {
+          throw new Error(
+            "无法连接 AutoSign 服务。若正在使用本机测试环境，请确认 UI 预览脚本仍在运行。"
+          );
+        }
         if (response.status === 401) {
           window.location.replace("/");
           throw new Error("管理员登录已过期");
@@ -755,29 +804,56 @@
         return Boolean(plugin && plugin.capabilities.includes("interactive_login"));
       }
 
-      function scheduleBrowserRefresh(delay = 850) {
+      function resetVikacgImport() {
+        vikacgImportForm.reset();
+        vikacgImportValue.disabled = false;
+        vikacgImportValue.type = "password";
+        document.querySelector("#vikacg-import-toggle").textContent = "显示内容";
+        vikacgImportError.textContent = "";
+        vikacgImportConfirmed = false;
+        vikacgImportSubmit.textContent = "验证导入内容";
+        vikacgImportSubmit.disabled = false;
+      }
+
+      function openVikacgRecovery(account) {
+        vikacgRecoveryTarget = account;
+        resetVikacgImport();
+        vikacgRecoveryAccount.textContent = `账户：${account.label}`;
+        vikacgRecoveryDialog.showModal();
+      }
+
+      function scheduleBrowserStatusRefresh(delay = 2000) {
         window.clearTimeout(browserPollTimer);
         if (!activeBrowserSession) return;
-        browserPollTimer = window.setTimeout(refreshBrowserFrame, delay);
+        browserPollTimer = window.setTimeout(refreshBrowserInfo, delay);
       }
 
       function openLiveBrowserWindow() {
-        if (!activeBrowserSession?.live_url) return null;
-        activeBrowserWindow = window.open(activeBrowserSession.live_url, "_blank");
+        if (!activeBrowserSession) return null;
+        if (!activeBrowserSession.live_url) {
+          api(`/api/v1/browser-sessions/${activeBrowserSession.id}/focus`, {
+            method: "POST", body: "{}"
+          }).catch((error) => showNotice(error.message, true));
+          return null;
+        }
+        const liveUrl = new URL(activeBrowserSession.live_url, window.location.href).href;
+        activeBrowserWindow = window.open(liveUrl, "_blank");
         if (!activeBrowserWindow) {
           showNotice("浏览器阻止了新标签，请允许此站点打开弹出窗口后重试", true);
         }
         return activeBrowserWindow;
       }
 
-      async function refreshLiveBrowserInfo() {
-        if (!activeBrowserSession || !browserLiveMode) return;
-        try {
-          await refreshBrowserInfo();
-        } catch (error) {
-          if (handleBrowserSessionError(error)) return;
-        }
-        scheduleBrowserRefresh(2000);
+      function showBrowserInteractionMode() {
+        const nativeWindow = Boolean(activeBrowserSession && !activeBrowserSession.live_url);
+        browserPageTitle.textContent = nativeWindow
+          ? "普通 Chrome 登录窗口已打开（尚未接管）"
+          : "实时浏览器已在独立标签中打开";
+        browserWebHelp.hidden = nativeWindow;
+        browserNativeHelp.hidden = !nativeWindow;
+        browserLiveOpen.textContent = nativeWindow
+          ? "Chrome 窗口已打开（使用 Alt+Tab 切换）"
+          : "打开或重新打开实时浏览器";
       }
 
       function handleBrowserSessionError(error) {
@@ -785,110 +861,50 @@
         if (error.status !== 404) return false;
         activeBrowserSession = null;
         window.clearTimeout(browserPollTimer);
+        if (activeBrowserWindow && !activeBrowserWindow.closed) activeBrowserWindow.close();
+        activeBrowserWindow = null;
         if (browserDialog.open) browserDialog.close();
         return true;
       }
 
       async function refreshBrowserInfo() {
         if (!activeBrowserSession) return;
-        const info = await api(`/api/v1/browser-sessions/${activeBrowserSession.id}`);
-        activeBrowserSession = info;
-        browserPageTitle.textContent = info.title || "浏览器登录";
-        browserLocation.textContent = info.url;
-      }
-
-      async function refreshBrowserFrame() {
-        if (!activeBrowserSession || browserFrameRequestActive) return;
-        if (browserLiveMode) {
-          await refreshLiveBrowserInfo();
-          return;
-        }
-        const sessionId = activeBrowserSession.id;
-        browserFrameRequestActive = true;
         try {
-          const response = await fetch(
-            `/api/v1/browser-sessions/${sessionId}/screenshot?t=${Date.now()}`,
-            {cache: "no-store"}
-          );
-          if (response.status === 401) {
-            activeBrowserSession = null;
-            window.clearTimeout(browserPollTimer);
-            window.location.replace("/");
-            return;
-          }
-          if (!response.ok) {
-            let message = `浏览器画面请求失败（${response.status}）`;
-            try {
-              const body = await response.json();
-              message = body.detail || message;
-            } catch {}
-            const error = new Error(message);
-            error.status = response.status;
-            throw error;
-          }
-          if (!activeBrowserSession || activeBrowserSession.id !== sessionId) return;
-          const nextUrl = URL.createObjectURL(await response.blob());
-          const previousUrl = browserFrameObjectUrl;
-          browserFrameObjectUrl = nextUrl;
-          browserScreenshot.src = nextUrl;
-          if (previousUrl) URL.revokeObjectURL(previousUrl);
+          const info = await api(`/api/v1/browser-sessions/${activeBrowserSession.id}`);
+          activeBrowserSession = info;
+          showBrowserInteractionMode();
+          scheduleBrowserStatusRefresh();
         } catch (error) {
-          if (activeBrowserSession) {
-            if (!handleBrowserSessionError(error)) scheduleBrowserRefresh(2000);
-          }
-        } finally {
-          browserFrameRequestActive = false;
+          if (!handleBrowserSessionError(error)) scheduleBrowserStatusRefresh(4000);
         }
-      }
-
-      function queueBrowserInput(path, body) {
-        browserInputQueue = browserInputQueue
-          .then(() => api(path, {method: "POST", body: JSON.stringify(body)}))
-          .then(() => refreshBrowserFrame())
-          .catch((error) => handleBrowserSessionError(error));
       }
 
       async function openBrowserLogin(account) {
         const pendingWindow = window.open("about:blank", "_blank");
         browserDialogAccount.textContent = `账户：${account.label}`;
-        browserPageTitle.textContent = "正在启动浏览器…";
-        browserLocation.textContent = "";
-        browserLoading.hidden = false;
-        browserScreenshot.removeAttribute("src");
-        browserKeyboardCapture.value = "";
-        browserLiveMode = false;
-        browserDialog.classList.remove("live-mode");
-        browserLivePanel.hidden = true;
-        browserStage.hidden = false;
-        browserRefresh.hidden = false;
+        browserPageTitle.textContent = "正在启动实时浏览器…";
+        browserWebHelp.hidden = false;
+        browserNativeHelp.hidden = true;
+        browserLiveOpen.disabled = true;
         browserDialog.showModal();
         try {
           activeBrowserSession = await api(
             `/api/v1/accounts/${account.id}/browser-session?clean=true`,
             {method: "POST", body: "{}"}
           );
-          browserPageTitle.textContent = activeBrowserSession.title;
-          browserLocation.textContent = activeBrowserSession.url;
-          if (activeBrowserSession.live_url) {
-            browserLiveMode = true;
-            browserDialog.classList.add("live-mode");
-            browserLivePanel.hidden = false;
-            browserStage.hidden = true;
-            browserRefresh.hidden = true;
-            browserHelp.textContent =
-              "实时画面来自 NAS 内的同一个 Chromium。完成登录后回到此处保存，" +
-              "Cookie、localStorage 和 IndexedDB 将使用主密钥加密。";
-            activeBrowserWindow = pendingWindow;
-            if (pendingWindow) {
-              pendingWindow.location.replace(activeBrowserSession.live_url);
-            } else {
-              showNotice("浏览器阻止了新标签，请点击“打开实时浏览器”", true);
-            }
-            refreshLiveBrowserInfo();
-          } else {
+          showBrowserInteractionMode();
+          browserLiveOpen.disabled = false;
+          if (!activeBrowserSession.live_url) {
             if (pendingWindow) pendingWindow.close();
-            refreshBrowserFrame();
+            activeBrowserWindow = null;
+          } else if (pendingWindow) {
+            activeBrowserWindow = pendingWindow;
+            const liveUrl = new URL(activeBrowserSession.live_url, window.location.href).href;
+            pendingWindow.location.replace(liveUrl);
+          } else {
+            showNotice("浏览器阻止了新标签，请点击“打开或重新打开实时浏览器”", true);
           }
+          scheduleBrowserStatusRefresh();
         } catch (error) {
           if (pendingWindow) pendingWindow.close();
           showNotice(error.message, true);
@@ -985,8 +1001,16 @@
           const actions = element("div", "actions account-actions");
 
           if (supportsInteractiveLogin(account)) {
-            const login = element("button", "login-action", "交互登录");
-            login.addEventListener("click", () => openBrowserLogin(account));
+            const isVikacg = account.plugin_id === "vikacg";
+            const login = element(
+              "button",
+              "login-action",
+              isVikacg ? "登录与恢复" : "交互登录"
+            );
+            login.addEventListener(
+              "click",
+              () => isVikacg ? openVikacgRecovery(account) : openBrowserLogin(account)
+            );
             actions.append(login);
           }
 
@@ -1571,78 +1595,93 @@
         document.querySelector("#delete-channel-name").textContent = "";
       });
 
-      browserScreenshot.addEventListener("load", async () => {
-        browserLoading.hidden = true;
+      document.querySelector("#vikacg-recovery-close").addEventListener(
+        "click", () => vikacgRecoveryDialog.close()
+      );
+      document.querySelector("#vikacg-open-browser").addEventListener("click", () => {
+        const account = vikacgRecoveryTarget;
+        vikacgRecoveryDialog.close();
+        if (account) openBrowserLogin(account);
+      });
+      document.querySelector("#vikacg-show-import").addEventListener("click", () => {
+        const account = vikacgRecoveryTarget;
+        if (!account) return;
+        vikacgImportTarget = account;
+        resetVikacgImport();
+        vikacgImportAccount.textContent = `账户：${account.label}`;
+        if (!account.secret_names.includes("browser_storage_state")) {
+          vikacgImportError.textContent = "此账户还没有基础登录状态，请先完成一次实时浏览器登录。";
+          vikacgImportValue.disabled = true;
+          vikacgImportSubmit.disabled = true;
+        }
+        vikacgRecoveryDialog.close();
+        vikacgImportDialog.showModal();
+        window.setTimeout(() => vikacgImportValue.focus(), 0);
+      });
+      document.querySelector("#vikacg-import-toggle").addEventListener("click", (event) => {
+        const showing = vikacgImportValue.type === "text";
+        vikacgImportValue.type = showing ? "password" : "text";
+        event.currentTarget.textContent = showing ? "显示内容" : "隐藏内容";
+      });
+      document.querySelector("#vikacg-import-close").addEventListener(
+        "click", () => vikacgImportDialog.close()
+      );
+      document.querySelector("#vikacg-import-cancel").addEventListener(
+        "click", () => vikacgImportDialog.close()
+      );
+      vikacgImportForm.addEventListener("submit", async (event) => {
+        event.preventDefault();
+        if (!vikacgImportTarget || !vikacgImportValue.value) return;
+        vikacgImportError.textContent = "";
+        vikacgImportSubmit.disabled = true;
         try {
-          await refreshBrowserInfo();
-          scheduleBrowserRefresh();
+          const result = await api(
+            `/api/v1/accounts/${vikacgImportTarget.id}/vikacg-state-import`,
+            {
+              method: "POST",
+              body: JSON.stringify({
+                raw_json: vikacgImportValue.value,
+                confirm_overwrite: vikacgImportConfirmed
+              })
+            }
+          );
+          vikacgImportValue.value = "";
+          vikacgImportDialog.close();
+          await loadAccounts();
+          showNotice(
+            result.token_refreshed
+              ? "VikACG 登录状态已刷新、验证并加密保存"
+              : "VikACG 登录状态已验证并加密保存"
+          );
         } catch (error) {
-          showNotice(error.message, true);
+          if (error.status === 409 && !vikacgImportConfirmed) {
+            vikacgImportConfirmed = true;
+            vikacgImportError.textContent =
+              "即将覆盖此账户当前保存的 VikACG 令牌。请再次点击确认；验证失败时旧状态不会改变。";
+            vikacgImportSubmit.textContent = "确认覆盖并验证";
+          } else {
+            vikacgImportError.textContent = error.message;
+          }
+        } finally {
+          vikacgImportSubmit.disabled = false;
         }
       });
-
-      browserScreenshot.addEventListener("error", () => {
-        if (activeBrowserSession) scheduleBrowserRefresh(2000);
-      });
-
-      browserScreenshot.addEventListener("click", async (event) => {
-        if (!activeBrowserSession) return;
-        const rect = browserScreenshot.getBoundingClientRect();
-        const x = (event.clientX - rect.left) * activeBrowserSession.viewport_width / rect.width;
-        const y = (event.clientY - rect.top) * activeBrowserSession.viewport_height / rect.height;
-        browserKeyboardCapture.focus({preventScroll: true});
-        try {
-          await api(`/api/v1/browser-sessions/${activeBrowserSession.id}/click`, {
-            method: "POST",
-            body: JSON.stringify({x, y})
-          });
-          refreshBrowserFrame();
-        } catch (error) { showNotice(error.message, true); }
-      });
-
-      browserKeyboardCapture.addEventListener("input", () => {
-        if (!activeBrowserSession) return;
-        const text = browserKeyboardCapture.value;
-        browserKeyboardCapture.value = "";
-        if (!text) return;
-        queueBrowserInput(
-          `/api/v1/browser-sessions/${activeBrowserSession.id}/type`,
-          {text}
-        );
-      });
-
-      browserKeyboardCapture.addEventListener("paste", (event) => {
-        if (!activeBrowserSession) return;
-        const text = event.clipboardData?.getData("text/plain") || "";
-        if (!text) return;
+      vikacgRecoveryDialog.addEventListener("cancel", (event) => {
         event.preventDefault();
-        event.stopPropagation();
-        browserKeyboardCapture.value = "";
-        queueBrowserInput(
-          `/api/v1/browser-sessions/${activeBrowserSession.id}/type`,
-          {text}
-        );
+        vikacgRecoveryDialog.close();
       });
-
-      browserKeyboardCapture.addEventListener("keydown", (event) => {
-        if (!activeBrowserSession) return;
-        const supportedKeys = new Map([
-          ["Tab", "Tab"], ["Enter", "Enter"], ["Backspace", "Backspace"],
-          ["Escape", "Escape"], ["Delete", "Delete"], ["ArrowUp", "ArrowUp"],
-          ["ArrowDown", "ArrowDown"], ["ArrowLeft", "ArrowLeft"],
-          ["ArrowRight", "ArrowRight"], ["Home", "Home"], ["End", "End"],
-          ["PageUp", "PageUp"], ["PageDown", "PageDown"]
-        ]);
-        const browserKey = supportedKeys.get(event.key);
-        if (!browserKey) return;
+      vikacgRecoveryDialog.addEventListener("close", () => {
+        vikacgRecoveryTarget = null;
+      });
+      vikacgImportDialog.addEventListener("cancel", (event) => {
         event.preventDefault();
-        queueBrowserInput(
-          `/api/v1/browser-sessions/${activeBrowserSession.id}/press`,
-          {key: browserKey}
-        );
+        vikacgImportDialog.close();
+      });
+      vikacgImportDialog.addEventListener("close", () => {
+        resetVikacgImport();
+        vikacgImportTarget = null;
       });
 
-      browserRefresh.addEventListener("click", refreshBrowserFrame);
       browserLiveOpen.addEventListener("click", openLiveBrowserWindow);
       browserSave.addEventListener("click", () => closeBrowserLogin(true));
       browserDiscard.addEventListener("click", () => closeBrowserLogin(false));
@@ -1657,21 +1696,7 @@
 
       browserDialog.addEventListener("close", () => {
         window.clearTimeout(browserPollTimer);
-        browserKeyboardCapture.value = "";
-        browserLoading.hidden = false;
-        browserScreenshot.removeAttribute("src");
-        browserLiveMode = false;
-        browserDialog.classList.remove("live-mode");
-        browserLivePanel.hidden = true;
-        browserStage.hidden = false;
-        browserRefresh.hidden = false;
-        browserHelp.textContent = "这是插件指定的真实登录页面。点击网站中的输入框后，" +
-          "可直接输入、粘贴并使用 Tab、Enter、退格和方向键。输入内容只送到当前临时" +
-          "浏览器，不写入日志；检测到登录成功后才会加密保存浏览器状态。";
-        if (browserFrameObjectUrl) {
-          URL.revokeObjectURL(browserFrameObjectUrl);
-          browserFrameObjectUrl = null;
-        }
+        browserLiveOpen.disabled = false;
       });
 
       document.querySelector("#logout").addEventListener("click", async () => {

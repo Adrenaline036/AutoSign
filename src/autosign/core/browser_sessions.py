@@ -4,10 +4,13 @@ import asyncio
 import base64
 import json
 import logging
+import shutil
+import socket
 from collections.abc import AsyncIterator, Mapping
 from contextlib import asynccontextmanager, suppress
 from dataclasses import dataclass, field
 from datetime import UTC, datetime, timedelta
+from pathlib import Path
 from uuid import uuid4
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
@@ -271,6 +274,92 @@ class PlaywrightAutomationClient:
             {"url": url, "data": dict(data)},
         )
         return BrowserResponse(**result)
+
+    async def post_json(
+        self,
+        url: str,
+        data: Mapping[str, object],
+        *,
+        headers: Mapping[str, str] | None = None,
+    ) -> BrowserResponse:
+        response = await self.page.context.request.post(
+            url,
+            data=dict(data),
+            headers=dict(headers or {}),
+            timeout=30_000,
+        )
+        return BrowserResponse(
+            status=response.status,
+            url=response.url,
+            text=await response.text(),
+        )
+
+    async def storage_value(self, origin: str, key: str) -> object | None:
+        """Read a restored IndexedDB value without navigating the page."""
+        state = await self.page.context.storage_state(indexed_db=True)
+        for origin_state in state.get("origins", []):
+            if origin_state.get("origin") != origin:
+                continue
+            for database in origin_state.get("indexedDB", []):
+                for store in database.get("stores", []):
+                    for record in store.get("records", []):
+                        if record.get("key") == key:
+                            return record.get("value")
+        return None
+
+    async def write_storage_value(self, key: str, value: object) -> bool:
+        """Replace an existing out-of-line IndexedDB value on the current origin."""
+        return bool(
+            await self.page.evaluate(
+                """async ({key, value}) => {
+                    for (const databaseInfo of await indexedDB.databases()) {
+                        if (!databaseInfo.name) continue;
+                        const database = await new Promise((resolve, reject) => {
+                            const request = indexedDB.open(databaseInfo.name);
+                            request.addEventListener("success", () => resolve(request.result));
+                            request.addEventListener("error", () => reject(request.error));
+                        });
+                        try {
+                            for (const storeName of database.objectStoreNames) {
+                                const found = await new Promise((resolve, reject) => {
+                                    const transaction = database.transaction(storeName, "readonly");
+                                    const request = transaction.objectStore(storeName).get(key);
+                                    request.addEventListener(
+                                        "success",
+                                        () => resolve(request.result !== undefined),
+                                    );
+                                    request.addEventListener("error", () => reject(request.error));
+                                });
+                                if (!found) continue;
+                                await new Promise((resolve, reject) => {
+                                    const transaction = database.transaction(
+                                        storeName,
+                                        "readwrite",
+                                    );
+                                    const store = transaction.objectStore(storeName);
+                                    if (store.keyPath === null) store.put(value, key);
+                                    else store.put(value);
+                                    transaction.addEventListener("complete", () => resolve(true));
+                                    transaction.addEventListener(
+                                        "error",
+                                        () => reject(transaction.error),
+                                    );
+                                    transaction.addEventListener(
+                                        "abort",
+                                        () => reject(transaction.error),
+                                    );
+                                });
+                                return true;
+                            }
+                        } finally {
+                            database.close();
+                        }
+                    }
+                    return false;
+                }""",
+                {"key": key, "value": value},
+            )
+        )
 
 
 @dataclass(slots=True)
@@ -881,6 +970,307 @@ class BrowserSessionManager:
     def _is_storage_state_error(exc: Exception) -> bool:
         message = str(exc).lower()
         return "error setting storage state" in message or "unable to restore indexeddb" in message
+
+
+@dataclass(slots=True)
+class DeferredChromeSession:
+    id: str
+    account_id: str
+    login_url: str
+    profile_dir: Path
+    cdp_port: int
+    process: asyncio.subprocess.Process
+    created_at: datetime
+    last_activity: datetime
+    browser: Browser | None = None
+    context: BrowserContext | None = None
+    page: Page | None = None
+    operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
+
+
+class DeferredChromeBrowserSessionManager(BrowserSessionManager):
+    """Launch ordinary Chrome first and attach Playwright only after user login."""
+
+    def __init__(
+        self,
+        *,
+        executable_path: Path,
+        profile_root: Path,
+        **kwargs,
+    ) -> None:
+        super().__init__(**kwargs)
+        self._native_executable = executable_path.resolve()
+        self._native_profile_root = profile_root.resolve()
+        self._native_profile_root.mkdir(parents=True, exist_ok=True)
+        self._native_sessions: dict[str, DeferredChromeSession] = {}
+
+    async def start(
+        self,
+        *,
+        account_id: str,
+        login_url: str,
+        storage_state_json: str | None = None,
+    ) -> BrowserSessionInfo:
+        del storage_state_json  # A dedicated clean Chrome profile is intentional here.
+        async with self._manager_lock:
+            await self._cleanup_expired_native_locked()
+            existing_id = self._account_sessions.get(account_id)
+            if existing_id is not None:
+                await self._close_native_locked(existing_id, save_state=False)
+
+            if not self._native_executable.is_file():
+                raise BrowserStorageStateError(
+                    f"Configured Chrome executable was not found: {self._native_executable}"
+                )
+            session_id = str(uuid4())
+            profile_dir = (self._native_profile_root / session_id).resolve()
+            if self._native_profile_root not in profile_dir.parents:
+                raise BrowserStorageStateError("Unsafe native Chrome profile path.")
+            profile_dir.mkdir(parents=True, exist_ok=False)
+            cdp_port = self._available_loopback_port()
+            process = await asyncio.create_subprocess_exec(
+                str(self._native_executable),
+                f"--user-data-dir={profile_dir}",
+                f"--remote-debugging-port={cdp_port}",
+                "--remote-debugging-address=127.0.0.1",
+                "--no-first-run",
+                "--no-default-browser-check",
+                login_url,
+                stdout=asyncio.subprocess.DEVNULL,
+                stderr=asyncio.subprocess.DEVNULL,
+            )
+            try:
+                await self._wait_for_debug_port(process, cdp_port)
+            except Exception:
+                await self._terminate_process(process)
+                await asyncio.to_thread(shutil.rmtree, profile_dir, True)
+                raise
+
+            now = datetime.now(UTC)
+            session = DeferredChromeSession(
+                id=session_id,
+                account_id=account_id,
+                login_url=login_url,
+                profile_dir=profile_dir,
+                cdp_port=cdp_port,
+                process=process,
+                created_at=now,
+                last_activity=now,
+            )
+            self._native_sessions[session.id] = session
+            self._account_sessions[account_id] = session.id
+            return self._native_info(session)
+
+    async def get_info(self, session_id: str) -> BrowserSessionInfo:
+        session = await self._get_native(session_id)
+        return self._native_info(session)
+
+    async def focus(self, session_id: str) -> None:
+        session = await self._get_native(session_id)
+        self._touch_native(session)
+
+    async def login_is_complete(
+        self,
+        session_id: str,
+        *,
+        selectors: tuple[str, ...],
+        cookie_name_suffixes: tuple[str, ...] = (),
+    ) -> bool:
+        session = await self._get_native(session_id)
+        async with session.operation_lock:
+            self._touch_native(session)
+            await self._attach_after_login(session)
+            assert session.page is not None
+            assert session.context is not None
+            for selector in selectors:
+                try:
+                    if await session.page.locator(selector).count() > 0:
+                        return True
+                except Exception:
+                    continue
+            if cookie_name_suffixes:
+                suffixes = tuple(suffix.lower() for suffix in cookie_name_suffixes)
+                cookies = await session.context.cookies()
+                if any(cookie["name"].lower().endswith(suffixes) for cookie in cookies):
+                    return True
+            return not selectors and not cookie_name_suffixes
+
+    async def close(self, session_id: str, *, save_state: bool) -> str | None:
+        async with self._manager_lock:
+            return await self._close_native_locked(session_id, save_state=save_state)
+
+    async def cleanup_expired(self) -> int:
+        async with self._manager_lock:
+            count = await self._cleanup_expired_native_locked()
+        self._log_expired(count)
+        return count
+
+    async def close_all(self) -> None:
+        async with self._manager_lock:
+            for session_id in list(self._native_sessions):
+                await self._close_native_locked(session_id, save_state=False)
+        await super().close_all()
+
+    async def _get_native(self, session_id: str) -> DeferredChromeSession:
+        session = self._native_sessions.get(session_id)
+        if session is None:
+            raise BrowserSessionNotFoundError(f"Unknown browser session: {session_id}")
+        if session.process.returncode is not None:
+            self._discard_native(session)
+            await asyncio.to_thread(shutil.rmtree, session.profile_dir, True)
+            raise BrowserSessionNotFoundError(
+                "Chrome login window was closed. Reopen interactive login."
+            )
+        if datetime.now(UTC) - session.last_activity > self._timeout:
+            async with self._manager_lock:
+                await self._close_native_locked(session_id, save_state=False)
+            self._log_expired(1)
+            raise BrowserSessionNotFoundError(f"Expired browser session: {session_id}")
+        return session
+
+    async def _attach_after_login(self, session: DeferredChromeSession) -> None:
+        if session.browser is not None and session.browser.is_connected():
+            return
+        if self._playwright is None:
+            self._playwright = await async_playwright().start()
+        session.browser = await self._playwright.chromium.connect_over_cdp(
+            f"http://127.0.0.1:{session.cdp_port}",
+            timeout=15_000,
+        )
+        if not session.browser.contexts:
+            raise BrowserStorageStateError("Chrome login profile has no browser context.")
+        session.context = session.browser.contexts[0]
+        pages = [page for page in session.context.pages if not page.is_closed()]
+        if not pages:
+            raise BrowserStorageStateError("Chrome login window has no open page.")
+        target_host = self._hostname(session.login_url)
+        session.page = next(
+            (page for page in reversed(pages) if self._hostname(page.url) == target_host),
+            pages[-1],
+        )
+        # A context attached over CDP does not know which origins were visited
+        # before Playwright connected, so storage_state() would otherwise return
+        # cookies but omit localStorage and IndexedDB. A single same-page reload
+        # after the user has finished login registers the current origin while
+        # preserving cookies, localStorage, sessionStorage and IndexedDB.
+        await session.page.reload(wait_until="commit", timeout=30_000)
+        with suppress(Exception):
+            await session.page.wait_for_load_state("domcontentloaded", timeout=5_000)
+
+    async def _close_native_locked(
+        self,
+        session_id: str,
+        *,
+        save_state: bool,
+    ) -> str | None:
+        session = self._native_sessions.pop(session_id, None)
+        if session is None:
+            raise BrowserSessionNotFoundError(f"Unknown browser session: {session_id}")
+        self._account_sessions.pop(session.account_id, None)
+        state_json: str | None = None
+        async with session.operation_lock:
+            try:
+                if save_state:
+                    await self._attach_after_login(session)
+                    assert session.context is not None
+                    assert session.page is not None
+                    falsey_keys = await self._collect_falsey_indexeddb_keys(session.context)
+                    session_storage = await self._collect_session_storage(
+                        session.context, session.page
+                    )
+                    state = await session.context.storage_state(indexed_db=True)
+                    self._apply_falsey_indexeddb_keys(state, falsey_keys)
+                    state, _ = normalize_storage_state(state)
+                    if session_storage:
+                        state[SESSION_STORAGE_STATE_KEY] = session_storage
+                    await self._validate_storage_state(state)
+                    state_json = json.dumps(
+                        state, ensure_ascii=False, separators=(",", ":")
+                    )
+            finally:
+                await self._shutdown_native(session)
+        return state_json
+
+    async def _cleanup_expired_native_locked(self) -> int:
+        count = 0
+        for session_id, session in list(self._native_sessions.items()):
+            if datetime.now(UTC) - session.last_activity <= self._timeout:
+                continue
+            await self._close_native_locked(session_id, save_state=False)
+            count += 1
+        return count
+
+    async def _shutdown_native(self, session: DeferredChromeSession) -> None:
+        if session.browser is not None and session.browser.is_connected():
+            with suppress(Exception):
+                await session.browser.close()
+        await self._terminate_process(session.process)
+        await asyncio.to_thread(shutil.rmtree, session.profile_dir, True)
+
+    def _discard_native(self, session: DeferredChromeSession) -> None:
+        self._native_sessions.pop(session.id, None)
+        if self._account_sessions.get(session.account_id) == session.id:
+            self._account_sessions.pop(session.account_id, None)
+
+    @staticmethod
+    def _native_info(session: DeferredChromeSession) -> BrowserSessionInfo:
+        return BrowserSessionInfo(
+            id=session.id,
+            account_id=session.account_id,
+            url=session.page.url if session.page is not None else session.login_url,
+            title=(
+                "普通 Chrome 登录窗口"
+                if session.page is None
+                else "Chrome 登录状态待保存"
+            ),
+            created_at=session.created_at,
+            last_activity=session.last_activity,
+        )
+
+    @staticmethod
+    def _touch_native(session: DeferredChromeSession) -> None:
+        session.last_activity = datetime.now(UTC)
+
+    @staticmethod
+    def _hostname(url: str) -> str:
+        from urllib.parse import urlparse
+
+        return (urlparse(url).hostname or "").lower()
+
+    @staticmethod
+    def _available_loopback_port() -> int:
+        with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as listener:
+            listener.bind(("127.0.0.1", 0))
+            return int(listener.getsockname()[1])
+
+    @staticmethod
+    async def _wait_for_debug_port(
+        process: asyncio.subprocess.Process,
+        port: int,
+    ) -> None:
+        for _ in range(80):
+            if process.returncode is not None:
+                raise BrowserStorageStateError("Chrome login window exited during startup.")
+            try:
+                reader, writer = await asyncio.open_connection("127.0.0.1", port)
+                writer.close()
+                await writer.wait_closed()
+                del reader
+                return
+            except OSError:
+                await asyncio.sleep(0.1)
+        raise BrowserStorageStateError("Chrome debugging endpoint did not start in time.")
+
+    @staticmethod
+    async def _terminate_process(process: asyncio.subprocess.Process) -> None:
+        if process.returncode is not None:
+            return
+        process.terminate()
+        try:
+            await asyncio.wait_for(process.wait(), timeout=5)
+        except TimeoutError:
+            process.kill()
+            await process.wait()
 
 
 class BrowserSessionCleanupCoordinator:

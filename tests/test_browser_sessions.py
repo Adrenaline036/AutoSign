@@ -22,6 +22,7 @@ from autosign.core.browser_sessions import (
     BrowserSessionManager,
     BrowserSessionNotFoundError,
     BrowserStorageStateError,
+    DeferredChromeBrowserSessionManager,
     PlaywrightAutomationClient,
     normalize_storage_state,
     session_storage_restore_script,
@@ -93,9 +94,17 @@ class FakePage:
         self.event_handlers: dict[str, list] = {}
         self.brought_to_front = False
         self.session_storage_entries: list[list[str]] = []
+        self.storage_write: dict | None = None
+        self.reload_calls = 0
 
     async def goto(self, url: str, **_kwargs) -> None:
         self.url = url
+
+    async def reload(self, **_kwargs) -> None:
+        self.reload_calls += 1
+
+    async def wait_for_load_state(self, *_args, **_kwargs) -> None:
+        pass
 
     async def title(self) -> str:
         return self.page_title
@@ -108,7 +117,10 @@ class FakePage:
     async def bring_to_front(self) -> None:
         self.brought_to_front = True
 
-    async def evaluate(self, script: str) -> dict:
+    async def evaluate(self, script: str, arg=None):
+        if isinstance(arg, dict) and {"key", "value"} <= arg.keys():
+            self.storage_write = arg
+            return True
         if script == SESSION_STORAGE_CAPTURE_SCRIPT:
             return {
                 "origin": "https://example.test",
@@ -156,7 +168,9 @@ class FakeContext:
         self.event_handlers: dict[str, list] = {}
         self.init_scripts: list[str] = []
         self.storage_state_indexed_db: bool | None = None
+        self.indexed_state: dict | None = None
         self.cdp_sessions: list[FakeCdpSession] = []
+        self.request = FakeApiRequest()
 
     async def add_init_script(self, *, script: str) -> None:
         self.init_scripts.append(script)
@@ -179,6 +193,8 @@ class FakeContext:
 
     async def storage_state(self, *, indexed_db: bool = False) -> dict:
         self.storage_state_indexed_db = indexed_db
+        if indexed_db and self.indexed_state is not None:
+            return self.indexed_state
         origins = []
         if indexed_db:
             origins.append(
@@ -200,6 +216,23 @@ class FakeContext:
         self.closed = True
 
 
+class FakeApiResponse:
+    status = 200
+    url = "https://example.test/api"
+
+    async def text(self) -> str:
+        return '{"status":"success"}'
+
+
+class FakeApiRequest:
+    def __init__(self) -> None:
+        self.posts: list[tuple[str, dict]] = []
+
+    async def post(self, url: str, **kwargs) -> FakeApiResponse:
+        self.posts.append((url, kwargs))
+        return FakeApiResponse()
+
+
 @pytest.mark.asyncio
 async def test_automation_client_clicks_plugin_selector() -> None:
     page = FakePage()
@@ -218,6 +251,68 @@ async def test_automation_client_uses_dom_click_after_actionability_timeout() ->
     assert await client.click('text="立即签到"') is True
     assert page.fake_locator.clicked is False
     assert page.fake_locator.dom_clicked is True
+
+
+@pytest.mark.asyncio
+async def test_automation_client_posts_json_through_context_request() -> None:
+    context = FakeContext()
+    client = PlaywrightAutomationClient(context.page)
+
+    response = await client.post_json(
+        "https://example.test/api",
+        {"action": "sign"},
+        headers={"Authorization": "Bearer test-only-token"},
+    )
+
+    assert response.status == 200
+    assert response.text == '{"status":"success"}'
+    assert context.request.posts == [
+        (
+            "https://example.test/api",
+            {
+                "data": {"action": "sign"},
+                "headers": {"Authorization": "Bearer test-only-token"},
+                "timeout": 30_000,
+            },
+        )
+    ]
+
+
+@pytest.mark.asyncio
+async def test_automation_client_reads_and_writes_indexed_db_value() -> None:
+    context = FakeContext()
+    context.indexed_state = {
+        "cookies": [],
+        "origins": [
+            {
+                "origin": "https://example.test",
+                "indexedDB": [
+                    {
+                        "name": "localforage",
+                        "stores": [
+                            {
+                                "name": "keyvaluepairs",
+                                "records": [
+                                    {"key": "accountStore3", "value": "saved-state"}
+                                ],
+                            }
+                        ],
+                    }
+                ],
+            }
+        ],
+    }
+    client = PlaywrightAutomationClient(context.page)
+
+    assert (
+        await client.storage_value("https://example.test", "accountStore3")
+        == "saved-state"
+    )
+    assert await client.write_storage_value("accountStore3", "updated-state") is True
+    assert context.page.storage_write == {
+        "key": "accountStore3",
+        "value": "updated-state",
+    }
 
 
 def test_normalize_storage_state_repairs_falsey_indexeddb_keys() -> None:
@@ -351,6 +446,233 @@ class StorageRestoreFailingBrowser(FakeBrowser):
                 "Unable to restore IndexedDB"
             )
         return await super().new_context(storage_state=storage_state, **kwargs)
+
+
+class FakeNativeProcess:
+    def __init__(self) -> None:
+        self.returncode: int | None = None
+        self.terminated = False
+        self.killed = False
+
+    def terminate(self) -> None:
+        self.terminated = True
+        self.returncode = 0
+
+    def kill(self) -> None:
+        self.killed = True
+        self.returncode = -9
+
+    async def wait(self) -> int:
+        return self.returncode or 0
+
+
+class FakeCdpChromium:
+    def __init__(self, browser: FakeBrowser) -> None:
+        self.browser = browser
+        self.connect_calls: list[tuple[str, int]] = []
+
+    async def connect_over_cdp(self, url: str, **kwargs) -> FakeBrowser:
+        self.connect_calls.append((url, kwargs["timeout"]))
+        return self.browser
+
+
+class FakeDeferredPlaywright:
+    def __init__(self, browser: FakeBrowser) -> None:
+        self.chromium = FakeCdpChromium(browser)
+
+
+async def _start_native_session(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> tuple[
+    DeferredChromeBrowserSessionManager,
+    BrowserSessionInfo,
+    FakeNativeProcess,
+    list[tuple],
+]:
+    await asyncio.to_thread(tmp_path.mkdir, parents=True, exist_ok=True)
+    executable = tmp_path / "chrome.exe"
+    await asyncio.to_thread(executable.touch)
+    process = FakeNativeProcess()
+    launch_calls: list[tuple] = []
+
+    async def fake_create_subprocess_exec(*args, **kwargs):
+        launch_calls.append((*args, kwargs))
+        return process
+
+    async def debug_port_ready(_process, _port: int) -> None:
+        pass
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    manager = DeferredChromeBrowserSessionManager(
+        executable_path=executable,
+        profile_root=tmp_path / "profiles",
+        timeout_seconds=10,
+    )
+    monkeypatch.setattr(manager, "_wait_for_debug_port", debug_port_ready)
+    info = await manager.start(
+        account_id="native-account",
+        login_url="https://example.test/login",
+    )
+    return manager, info, process, launch_calls
+
+
+@pytest.mark.asyncio
+async def test_deferred_chrome_launches_without_playwright_automation_flags(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, info, process, launch_calls = await _start_native_session(
+        tmp_path, monkeypatch
+    )
+
+    arguments = [str(value) for value in launch_calls[0][:-1]]
+    assert any(value.startswith("--user-data-dir=") for value in arguments)
+    assert any(value.startswith("--remote-debugging-port=") for value in arguments)
+    assert "--remote-debugging-address=127.0.0.1" in arguments
+    assert not any("enable-automation" in value for value in arguments)
+    assert manager._native_sessions[info.id].browser is None
+
+    profile_dir = manager._native_sessions[info.id].profile_dir
+    await manager.close(info.id, save_state=False)
+    assert process.terminated is True
+    assert not profile_dir.exists()
+    assert info.id not in manager._native_sessions
+    assert "native-account" not in manager._account_sessions
+
+
+@pytest.mark.asyncio
+async def test_deferred_chrome_attaches_only_when_checked_and_reloads_once(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, info, _process, _launch_calls = await _start_native_session(
+        tmp_path, monkeypatch
+    )
+    context = FakeContext()
+    context.page.url = "https://example.test/account"
+    browser = FakeBrowser()
+    browser.contexts = [context]
+    playwright = FakeDeferredPlaywright(browser)
+    manager._playwright = playwright  # type: ignore[assignment]
+
+    assert playwright.chromium.connect_calls == []
+    assert await manager.login_is_complete(info.id, selectors=("#signed-in",)) is True
+    assert playwright.chromium.connect_calls == [
+        (f"http://127.0.0.1:{manager._native_sessions[info.id].cdp_port}", 15_000)
+    ]
+    assert context.page.reload_calls == 1
+
+    assert await manager.login_is_complete(info.id, selectors=("#signed-in",)) is True
+    assert len(playwright.chromium.connect_calls) == 1
+    assert context.page.reload_calls == 1
+    await manager.close(info.id, save_state=False)
+
+
+@pytest.mark.asyncio
+async def test_deferred_chrome_save_returns_state_and_cleans_up(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, info, process, _launch_calls = await _start_native_session(
+        tmp_path, monkeypatch
+    )
+    context = FakeContext()
+    context.page.url = "https://example.test/account"
+    context.page.session_storage_entries = [["auth", "test-only-token"]]
+    browser = FakeBrowser()
+    browser.contexts = [context]
+    manager._playwright = FakeDeferredPlaywright(browser)  # type: ignore[assignment]
+
+    async def accept_state(_state: dict) -> None:
+        pass
+
+    monkeypatch.setattr(manager, "_validate_storage_state", accept_state)
+    profile_dir = manager._native_sessions[info.id].profile_dir
+    state_json = await manager.close(info.id, save_state=True)
+    state = json.loads(state_json or "{}")
+
+    assert state["cookies"][0]["name"] == "session"
+    assert state[SESSION_STORAGE_STATE_KEY][0]["entries"] == [
+        ["auth", "test-only-token"]
+    ]
+    assert context.storage_state_indexed_db is True
+    assert context.page.reload_calls == 1
+    assert browser.closed is True
+    assert process.terminated is True
+    assert not profile_dir.exists()
+
+
+@pytest.mark.asyncio
+async def test_deferred_chrome_capture_failure_is_fail_closed(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, info, process, _launch_calls = await _start_native_session(
+        tmp_path, monkeypatch
+    )
+    context = FakeContext()
+    context.page.url = "https://example.test/account"
+    browser = FakeBrowser()
+    browser.contexts = [context]
+    manager._playwright = FakeDeferredPlaywright(browser)  # type: ignore[assignment]
+
+    async def capture_fails(_context) -> list[dict]:
+        raise BrowserStorageStateError("capture failed")
+
+    monkeypatch.setattr(manager, "_collect_falsey_indexeddb_keys", capture_fails)
+    profile_dir = manager._native_sessions[info.id].profile_dir
+    with pytest.raises(BrowserStorageStateError, match="capture failed"):
+        await manager.close(info.id, save_state=True)
+
+    assert process.terminated is True
+    assert browser.closed is True
+    assert not profile_dir.exists()
+    assert info.id not in manager._native_sessions
+    assert "native-account" not in manager._account_sessions
+
+
+@pytest.mark.asyncio
+async def test_deferred_chrome_start_failure_and_expiration_clean_resources(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    executable = tmp_path / "chrome.exe"
+    await asyncio.to_thread(executable.touch)
+    failed_process = FakeNativeProcess()
+
+    async def fake_create_subprocess_exec(*_args, **_kwargs):
+        return failed_process
+
+    async def debug_port_fails(_process, _port: int) -> None:
+        raise BrowserStorageStateError("debug endpoint failed")
+
+    monkeypatch.setattr(asyncio, "create_subprocess_exec", fake_create_subprocess_exec)
+    manager = DeferredChromeBrowserSessionManager(
+        executable_path=executable,
+        profile_root=tmp_path / "profiles",
+        timeout_seconds=10,
+    )
+    monkeypatch.setattr(manager, "_wait_for_debug_port", debug_port_fails)
+    with pytest.raises(BrowserStorageStateError, match="debug endpoint failed"):
+        await manager.start(
+            account_id="failed-account",
+            login_url="https://example.test/login",
+        )
+    assert failed_process.terminated is True
+    assert list((tmp_path / "profiles").iterdir()) == []
+
+    manager, info, expired_process, _launch_calls = await _start_native_session(
+        tmp_path / "expiry", monkeypatch
+    )
+    profile_dir = manager._native_sessions[info.id].profile_dir
+    manager._native_sessions[info.id].last_activity = datetime.now(UTC) - timedelta(
+        seconds=11
+    )
+    assert await manager.cleanup_expired() == 1
+    assert expired_process.terminated is True
+    assert not profile_dir.exists()
+    assert info.id not in manager._native_sessions
 
 
 def test_browser_manager_can_hide_headful_window_offscreen() -> None:
@@ -700,6 +1022,7 @@ class FakeApiBrowserManager:
         self.login_complete = True
         self.started_storage_states: list[str | None] = []
         self.activity_calls = 0
+        self.focus_calls = 0
 
     async def start(
         self,
@@ -721,6 +1044,12 @@ class FakeApiBrowserManager:
 
     async def get_info(self, _session_id: str) -> BrowserSessionInfo:
         return self.info
+
+    async def focus(self, _session_id: str) -> None:
+        self.focus_calls += 1
+
+    async def cleanup_expired(self) -> int:
+        return 0
 
     async def screenshot(self, _session_id: str) -> bytes:
         return b"fake-png"
@@ -776,6 +1105,11 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         started = client.post(f"/api/v1/accounts/{account['id']}/browser-session")
         assert started.status_code == 200
         session_id = started.json()["id"]
+        assert started.json()["live_url"] == f"/browser-sessions/{session_id}/live"
+
+        standalone = client.get(started.json()["live_url"])
+        assert standalone.status_code == 200
+        assert "AutoSign 独立登录浏览器" in standalone.text
 
         screenshot = client.get(f"/api/v1/browser-sessions/{session_id}/screenshot")
         assert screenshot.content == b"fake-png"
@@ -784,6 +1118,10 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         activity = client.post(f"/api/v1/browser-sessions/{session_id}/activity")
         assert activity.status_code == 204
         assert browser_manager.activity_calls == 1
+
+        focused = client.post(f"/api/v1/browser-sessions/{session_id}/focus")
+        assert focused.status_code == 204
+        assert browser_manager.focus_calls == 2  # live page load plus explicit focus
 
         closed = client.post(
             f"/api/v1/browser-sessions/{session_id}/close",
@@ -834,3 +1172,30 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         assert forced.json()["saved"] is True
         assert forced.json()["verified"] is False
         assert BROWSER_STATE_SECRET in forced.json()["secret_names"]
+
+
+def test_native_browser_session_uses_visible_system_window_contract(tmp_path: Path) -> None:
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(SecretCipher.generate_key()),
+        auth_disabled=True,
+        browser_native_window=True,
+    )
+    browser_manager = FakeApiBrowserManager()
+    app = create_app(settings, browser_manager_override=browser_manager)
+
+    with TestClient(app) as client:
+        account = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "系统 Chrome 测试"},
+        ).json()
+        started = client.post(f"/api/v1/accounts/{account['id']}/browser-session")
+
+        assert started.status_code == 200
+        assert started.json()["live_url"] is None
+        focused = client.post(
+            f"/api/v1/browser-sessions/{started.json()['id']}/focus"
+        )
+        assert focused.status_code == 204
+        assert browser_manager.focus_calls == 1

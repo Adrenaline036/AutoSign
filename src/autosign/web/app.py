@@ -28,6 +28,7 @@ from autosign.core.browser_sessions import (
     BrowserSessionManager,
     BrowserSessionNotFoundError,
     BrowserStorageStateError,
+    DeferredChromeBrowserSessionManager,
 )
 from autosign.core.config import Settings, get_settings
 from autosign.core.db import Account, Database
@@ -50,6 +51,7 @@ from autosign.core.services.notifications import (
     NotificationChannelNotFoundError,
 )
 from autosign.plugin_sdk import PluginCapability, PluginManifest, SignResult
+from autosign.plugins.vikacg import VikacgImportError, VikacgPlugin
 from autosign.web.schemas import (
     AccountCreate,
     AccountDelete,
@@ -75,6 +77,8 @@ from autosign.web.schemas import (
     ScheduleWrite,
     SecretList,
     SecretWrite,
+    VikacgStateImport,
+    VikacgStateImportRead,
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
@@ -106,17 +110,27 @@ def create_app(
         master_key,
         session_hours=settings.auth_session_hours,
     )
-    browser_sessions = browser_manager_override or BrowserSessionManager(
-        timeout_seconds=settings.browser_session_timeout_seconds,
-        headless=settings.browser_headless,
-        hide_window=settings.browser_hide_window,
-        proxy_server=(
+    browser_options = {
+        "timeout_seconds": settings.browser_session_timeout_seconds,
+        "headless": settings.browser_headless,
+        "hide_window": settings.browser_hide_window,
+        "proxy_server": (
             settings.browser_proxy_server.get_secret_value()
             if settings.browser_proxy_server is not None
             else None
         ),
-        proxy_bypass=settings.browser_proxy_bypass,
-    )
+        "proxy_bypass": settings.browser_proxy_bypass,
+    }
+    if browser_manager_override is not None:
+        browser_sessions = browser_manager_override
+    elif settings.browser_native_executable is not None:
+        browser_sessions = DeferredChromeBrowserSessionManager(
+            executable_path=settings.browser_native_executable,
+            profile_root=settings.data_dir / "browser-login-profiles",
+            **browser_options,
+        )
+    else:
+        browser_sessions = BrowserSessionManager(**browser_options)
     browser_cleanup = BrowserSessionCleanupCoordinator(
         browser_sessions,
         poll_seconds=settings.browser_session_cleanup_poll_seconds,
@@ -622,6 +636,70 @@ def create_app(
         except (AccountNotFoundError, LookupError) as exc:
             raise account_error(exc) from exc
 
+    @app.post(
+        "/api/v1/accounts/{account_id}/vikacg-state-import",
+        response_model=VikacgStateImportRead,
+    )
+    async def import_vikacg_state(
+        account_id: str,
+        request: VikacgStateImport,
+    ) -> VikacgStateImportRead:
+        try:
+            account = accounts.get(account_id)
+            plugin = registry.get(account.plugin_id)
+        except (AccountNotFoundError, LookupError) as exc:
+            raise account_error(exc) from exc
+        if account.plugin_id != "vikacg" or not isinstance(plugin, VikacgPlugin):
+            raise HTTPException(status_code=400, detail="此功能只支持 VikACG 账户。")
+        try:
+            old_state = vault.get(account.id, BROWSER_STATE_SECRET)
+        except LookupError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail="此账户还没有基础登录状态，请先完成一次交互登录。",
+            ) from exc
+        if not request.confirm_overwrite:
+            raise HTTPException(
+                status_code=409,
+                detail="导入会覆盖当前 VikACG 令牌；请确认后再次提交。",
+            )
+
+        raw_json = request.raw_json.get_secret_value()
+        if not raw_json.strip():
+            raise HTTPException(status_code=400, detail="请粘贴完整的 accountStore3 内容。")
+        if len(raw_json) > 65_536:
+            raise HTTPException(status_code=413, detail="accountStore3 内容超过 65536 字符。")
+        try:
+            candidate_state, token_present, refresh_present = (
+                plugin.prepare_imported_storage_state(old_state, raw_json)
+            )
+            async with browser_sessions.automation(
+                storage_state_json=candidate_state,
+            ) as browser:
+                validation = await plugin.validate_imported_session(
+                    browser,
+                    force_refresh=not token_present and refresh_present,
+                )
+                verified_state = await browser_sessions.capture_automation_state(browser)
+        except VikacgImportError as exc:
+            raise HTTPException(status_code=400, detail=str(exc)) from exc
+        except BrowserStorageStateError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
+        except Exception as exc:
+            raise HTTPException(
+                status_code=502,
+                detail=f"VikACG 登录状态验证失败：{type(exc).__name__}",
+            ) from exc
+
+        vault.set(account.id, BROWSER_STATE_SECRET, verified_state)
+        return VikacgStateImportRead(
+            imported=True,
+            token=token_present and validation.token_present,
+            refresh_token=refresh_present or validation.refresh_token_present,
+            token_refreshed=validation.token_refreshed,
+            device_profile_preserved=True,
+        )
+
     def serialize_browser_session(info: BrowserSessionInfo) -> BrowserSessionRead:
         return BrowserSessionRead(
             id=info.id,
@@ -633,9 +711,9 @@ def create_app(
             viewport_width=info.viewport_width,
             viewport_height=info.viewport_height,
             live_url=(
-                f"/browser-sessions/{info.id}/live"
-                if settings.browser_live_enabled
-                else None
+                None
+                if settings.browser_native_window
+                else f"/browser-sessions/{info.id}/live"
             ),
         )
 
@@ -708,16 +786,22 @@ def create_app(
         except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
             raise browser_error(exc) from exc
 
+    @app.post("/api/v1/browser-sessions/{session_id}/focus", status_code=204)
+    async def focus_browser_session(session_id: str) -> None:
+        try:
+            await browser_sessions.focus(session_id)
+        except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
+            raise browser_error(exc) from exc
+
     @app.get("/browser-sessions/{session_id}/live", include_in_schema=False)
     async def live_browser(session_id: str) -> FileResponse:
-        if not settings.browser_live_enabled:
-            raise HTTPException(status_code=404, detail="Live browser is not enabled.")
         try:
             await browser_sessions.focus(session_id)
         except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
             raise browser_error(exc) from exc
         return FileResponse(
-            STATIC_DIR / "live_browser.html",
+            STATIC_DIR
+            / ("live_browser.html" if settings.browser_live_enabled else "remote_browser.html"),
             headers={"Cache-Control": "no-store, max-age=0"},
         )
 

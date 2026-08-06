@@ -1,3 +1,5 @@
+import json
+from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock
 
@@ -5,9 +7,77 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from autosign.core import backup
+from autosign.core.browser_sessions import (
+    BROWSER_STATE_SECRET,
+    DeferredChromeBrowserSessionManager,
+)
 from autosign.core.config import Settings
 from autosign.core.security import SecretCipher
+from autosign.plugins.vikacg import VikacgImportError, VikacgImportResult, VikacgPlugin
 from autosign.web.app import create_app
+
+
+class FakeImportBrowserManager:
+    def __init__(self) -> None:
+        self.candidate_state = ""
+
+    @asynccontextmanager
+    async def automation(self, *, storage_state_json: str):
+        self.candidate_state = storage_state_json
+        yield object()
+
+    async def capture_automation_state(self, _browser: object) -> str:
+        return self.candidate_state
+
+    async def cleanup_expired(self) -> int:
+        return 0
+
+    async def close_all(self) -> None:
+        return None
+
+
+def vikacg_browser_state(token: str = "old-token") -> str:
+    return json.dumps(
+        {
+            "cookies": [],
+            "origins": [
+                {
+                    "origin": VikacgPlugin.ORIGIN,
+                    "localStorage": [],
+                    "indexedDB": [
+                        {
+                            "name": "localforage",
+                            "version": 1,
+                            "stores": [
+                                {
+                                    "name": "keyvaluepairs",
+                                    "autoIncrement": False,
+                                    "keyPath": None,
+                                    "records": [
+                                        {
+                                            "key": VikacgPlugin.ACCOUNT_STORAGE_KEY,
+                                            "value": json.dumps(
+                                                {
+                                                    "accounts": [
+                                                        {
+                                                            "id": 42,
+                                                            "token": token,
+                                                            "refreshToken": "old-refresh",
+                                                        }
+                                                    ],
+                                                    "currentID": 42,
+                                                }
+                                            ),
+                                        }
+                                    ],
+                                }
+                            ],
+                        }
+                    ],
+                }
+            ],
+        }
+    )
 
 
 def settings_for_test(data_dir: Path, key: str | None = None) -> Settings:
@@ -33,6 +103,11 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert '<dialog id="secret-dialog"' not in dashboard.text
     assert '<dialog id="delete-account-dialog"' in dashboard.text
     assert '<dialog id="browser-login-dialog"' in dashboard.text
+    assert '<dialog id="vikacg-recovery-dialog"' in dashboard.text
+    assert 'id="vikacg-import-value" class="secret-json-input" maxlength="65536"' in dashboard.text
+    assert 'type="password" autocomplete="off"' in dashboard.text
+    assert 'isVikacg ? "登录与恢复" : "交互登录"' in dashboard.text
+    assert "/vikacg-state-import" in dashboard.text
     assert '<dialog id="execution-detail-dialog"' in dashboard.text
     assert '<dialog id="force-browser-save-dialog"' in dashboard.text
     assert '<dialog id="schedule-dialog"' in dashboard.text
@@ -56,14 +131,24 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert dashboard.text.index("<h2>消息推送渠道</h2>") < dashboard.text.index(
         "<h2>系统备份</h2>"
     )
-    assert 'id="browser-screenshot"' in dashboard.text
+    assert '<dialog id="vikacg-import-dialog"' in dashboard.text
+    assert '.recovery-options { display: grid; grid-template-columns: 1fr;' in dashboard.text
+    assert '>尝试导入 accountStore3</button>' in dashboard.text
+    assert "找不到该记录不代表操作错误" in dashboard.text
+    assert "不要选择 Cookies" in dashboard.text
+    assert "localforage → keyvaluepairs" in dashboard.text
+    assert "accountStore3 是右侧记录表中的 Key" in dashboard.text
+    assert "Name、Domain、Path" in dashboard.text
+    assert 'id="browser-screenshot"' not in dashboard.text
     assert 'id="browser-live-panel"' in dashboard.text
     assert 'id="browser-live-open"' in dashboard.text
+    assert 'id="browser-native-help"' in dashboard.text
+    assert "普通 Chrome 登录窗口已打开（尚未接管）" in dashboard.text
+    assert "AutoSign 此时尚未连接浏览器" in dashboard.text
+    assert "/focus`" in dashboard.text
     assert "activeBrowserSession.live_url" in dashboard.text
-    assert 'id="browser-keyboard-capture"' in dashboard.text
-    assert 'browserKeyboardCapture.addEventListener("paste"' in dashboard.text
-    assert "event.clipboardData?.getData(\"text/plain\")" in dashboard.text
-    assert "browserFrameRequestActive" in dashboard.text
+    assert 'id="browser-keyboard-capture"' not in dashboard.text
+    assert "无法连接 AutoSign 服务" in dashboard.text
     assert 'id="execution-history"' in dashboard.text
     assert 'id="browser-text-form"' not in dashboard.text
     assert 'class="grid account-grid"' in dashboard.text
@@ -84,6 +169,123 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert execution.status_code == 200
     assert execution.json()["verified"] is True
     assert execution.json()["details"]["reward"] == 5
+
+
+def test_local_preview_remote_browser_is_a_separate_interactive_page() -> None:
+    remote_browser = (
+        Path(__file__).parents[1]
+        / "src"
+        / "autosign"
+        / "web"
+        / "static"
+        / "remote_browser.html"
+    ).read_text(encoding="utf-8")
+
+    assert "AutoSign 独立登录浏览器" in remote_browser
+    assert 'id="screen"' in remote_browser
+    assert 'id="keyboard" type="text"' in remote_browser
+    assert 'id="paste-input" type="password"' in remote_browser
+    assert 'id="paste-send"' in remote_browser
+    assert "remoteInputArmed = true" in remote_browser
+    assert "stage.focus({preventScroll: true})" not in remote_browser
+    assert "/screenshot?t=${Date.now()}" in remote_browser
+    assert "/click`" in remote_browser
+    assert "/type`" in remote_browser
+    assert "/press`" in remote_browser
+    assert "window.prompt(" not in remote_browser
+    assert "window.alert(" not in remote_browser
+    assert "window.confirm(" not in remote_browser
+
+
+def test_native_executable_selects_deferred_chrome_manager(tmp_path: Path) -> None:
+    settings = settings_for_test(tmp_path)
+    settings.browser_native_window = True
+    settings.browser_native_executable = tmp_path / "chrome.exe"
+
+    app = create_app(settings)
+
+    assert isinstance(
+        app.state.browser_sessions,
+        DeferredChromeBrowserSessionManager,
+    )
+
+
+def test_vikacg_state_import_requires_confirmation_and_preserves_old_state(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    manager = FakeImportBrowserManager()
+    app = create_app(settings_for_test(tmp_path), browser_manager_override=manager)
+    with TestClient(app) as client:
+        account = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "vikacg", "label": "VikACG test"},
+        ).json()
+        old_state = vikacg_browser_state()
+        client.app.state.vault.set(account["id"], BROWSER_STATE_SECRET, old_state)
+        imported = json.dumps(
+            {"accounts": [{"id": 42, "token": "new-token"}], "currentID": 42}
+        )
+
+        confirmation = client.post(
+            f"/api/v1/accounts/{account['id']}/vikacg-state-import",
+            json={"raw_json": imported, "confirm_overwrite": False},
+        )
+        assert confirmation.status_code == 409
+        assert client.app.state.vault.get(account["id"], BROWSER_STATE_SECRET) == old_state
+
+        async def reject_import(_self, _browser, *, force_refresh=False):
+            raise VikacgImportError("导入状态无效。")
+
+        monkeypatch.setattr(VikacgPlugin, "validate_imported_session", reject_import)
+        rejected = client.post(
+            f"/api/v1/accounts/{account['id']}/vikacg-state-import",
+            json={"raw_json": imported, "confirm_overwrite": True},
+        )
+        assert rejected.status_code == 400
+        assert client.app.state.vault.get(account["id"], BROWSER_STATE_SECRET) == old_state
+
+
+def test_vikacg_state_import_saves_only_after_validation(tmp_path: Path, monkeypatch) -> None:
+    manager = FakeImportBrowserManager()
+    app = create_app(settings_for_test(tmp_path), browser_manager_override=manager)
+
+    async def accept_import(_self, _browser, *, force_refresh=False):
+        return VikacgImportResult(True, True, False)
+
+    monkeypatch.setattr(VikacgPlugin, "validate_imported_session", accept_import)
+    with TestClient(app) as client:
+        account = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "vikacg", "label": "VikACG test"},
+        ).json()
+        client.app.state.vault.set(account["id"], BROWSER_STATE_SECRET, vikacg_browser_state())
+        imported = json.dumps(
+            {
+                "accounts": [
+                    {"id": 42, "token": "new-token", "refreshToken": "new-refresh"}
+                ],
+                "currentID": 42,
+            }
+        )
+        response = client.post(
+            f"/api/v1/accounts/{account['id']}/vikacg-state-import",
+            json={"raw_json": imported, "confirm_overwrite": True},
+        )
+
+        assert response.status_code == 200
+        assert response.json() == {
+            "imported": True,
+            "token": True,
+            "refresh_token": True,
+            "token_refreshed": False,
+            "device_profile_preserved": True,
+        }
+        saved = client.app.state.vault.get(account["id"], BROWSER_STATE_SECRET)
+        records = json.loads(saved)["origins"][0]["indexedDB"][0]["stores"][0]["records"]
+        account_cache = json.loads(records[0]["value"])
+        assert account_cache["accounts"][0]["token"] == "new-token"
+        assert account_cache["accounts"][0]["refreshToken"] == "new-refresh"
 
 
 def test_live_browser_uses_csrf_protected_masked_paste() -> None:

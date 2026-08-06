@@ -25,6 +25,8 @@ class Settings(BaseSettings):
     browser_session_cleanup_poll_seconds: float = Field(default=60, gt=0)
     browser_headless: bool = True
     browser_hide_window: bool = False
+    browser_native_window: bool = False
+    browser_native_executable: Path | None = None
     browser_proxy_server: SecretStr | None = None
     browser_proxy_bypass: str | None = None
     browser_live_enabled: bool = False
