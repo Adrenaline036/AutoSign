@@ -484,6 +484,9 @@ class FakeDeferredPlaywright:
 async def _start_native_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
+    *,
+    proxy_server: str | None = None,
+    proxy_bypass: str | None = None,
 ) -> tuple[
     DeferredChromeBrowserSessionManager,
     BrowserSessionInfo,
@@ -508,6 +511,8 @@ async def _start_native_session(
         executable_path=executable,
         profile_root=tmp_path / "profiles",
         timeout_seconds=10,
+        proxy_server=proxy_server,
+        proxy_bypass=proxy_bypass,
     )
     monkeypatch.setattr(manager, "_wait_for_debug_port", debug_port_ready)
     info = await manager.start(
@@ -533,12 +538,40 @@ async def test_deferred_chrome_launches_without_playwright_automation_flags(
     assert not any("enable-automation" in value for value in arguments)
     assert manager._native_sessions[info.id].browser is None
 
+    manager._native_sessions[info.id].last_activity = datetime.now(UTC) - timedelta(
+        seconds=5
+    )
+    previous_activity = manager._native_sessions[info.id].last_activity
+    await manager.mark_activity(info.id)
+    assert manager._native_sessions[info.id].last_activity > previous_activity
+
     profile_dir = manager._native_sessions[info.id].profile_dir
     await manager.close(info.id, save_state=False)
     assert process.terminated is True
     assert not profile_dir.exists()
     assert info.id not in manager._native_sessions
     assert "native-account" not in manager._account_sessions
+
+
+@pytest.mark.asyncio
+async def test_deferred_chrome_passes_proxy_without_playwright_launch(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    manager, info, _process, launch_calls = await _start_native_session(
+        tmp_path,
+        monkeypatch,
+        proxy_server="http://proxy.example:7890",
+        proxy_bypass="www.vikacg.com,bbs.yamibo.com",
+    )
+
+    arguments = [str(value) for value in launch_calls[0][:-1]]
+    assert "--proxy-server=http://proxy.example:7890" in arguments
+    assert (
+        "--proxy-bypass-list=www.vikacg.com;bbs.yamibo.com" in arguments
+    )
+    assert not any("enable-automation" in value for value in arguments)
+    await manager.close(info.id, save_state=False)
 
 
 @pytest.mark.asyncio

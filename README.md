@@ -25,7 +25,7 @@ AutoSign 是一个面向 NAS 与 Docker 的自托管自动签到平台。它提�
 
 - 账户、计划、执行记录与通知渠道的 Web GUI
 - Playwright 驱动的网站原生登录与签到
-- noVNC 实时浏览器，支持弹窗、安全验证、鼠标、键盘和粘贴
+- noVNC 实时浏览器；登录期间先运行普通容器 Chromium，完成后才由 Playwright 接管并保存状态
 - AES-GCM 加密保存网站登录状态及通知凭据
 - SQLite 持久化与 Alembic 自动迁移
 - SQLite WAL 并发读写、异常退出恢复与包含 WAL 数据的一致性备份
@@ -57,7 +57,7 @@ flowchart LR
     SDK --> Plugins["独立站点插件"]
     Core --> DB["SQLite / Alembic"]
     Core --> Vault["AES-GCM 秘密库"]
-    Core --> Browser["Playwright / noVNC"]
+    Core --> Browser["Chromium 延迟接管 / Playwright / noVNC"]
     Core --> Notify["Kuma / NapCat"]
     Core --> Backup["加密备份"]
 ```
@@ -129,7 +129,7 @@ AutoSign 将以下浏览器状态合并保存：
 
 状态在写入 SQLite 前由 `AUTOSIGN_MASTER_KEY` 使用 AES-GCM 加密。API 和 GUI 只返回已保存秘密的名称，不回显内容。
 
-Docker 中的 Chromium 运行在虚拟显示环境。原始 VNC 服务只监听容器回环地址；noVNC 静态资源与 WebSocket 转发均要求有效的管理员会话。无需映射 `5900`，也不应将 VNC 或管理端口直接暴露到公网。
+Docker 中的 Chromium 运行在虚拟显示环境。交互登录期间 Chromium 作为普通 X11 进程启动，Playwright 不参与启动或输入；只有用户点击“登录完成，检测并保存”后，AutoSign 才通过容器回环 CDP 接管并导出状态。原始 VNC 与 CDP 均只监听容器回环地址；noVNC 静态资源与 WebSocket 转发要求有效的管理员会话。无需映射 `5900` 或调试端口，也不应将其暴露到公网。
 
 粘贴文本通过现有的管理员会话和 CSRF 校验后写入当前聚焦的远端输入框。备用输入框默认隐藏内容；文本发送后立即清空，不写入 AutoSign 数据库，成功提示也只显示字符数。
 
@@ -146,9 +146,10 @@ Docker 中的 Chromium 运行在虚拟显示环境。原始 VNC 服务只监听�
 | `AUTOSIGN_BROWSER_HEADLESS` | `true` | 是否使用无界面 Chromium；Docker 示例使用虚拟显示下的 headful 模式 |
 | `AUTOSIGN_BROWSER_HIDE_WINDOW` | `false` | 桌面开发时将原生 headful 窗口移出屏幕 |
 | `AUTOSIGN_BROWSER_LIVE_ENABLED` | `false` | 启用 noVNC 实时登录；Docker 示例已开启 |
+| `AUTOSIGN_BROWSER_NATIVE_EXECUTABLE` | 无 | 普通浏览器延迟接管入口；官方 Docker 示例指向镜像内固定 Chromium 启动器 |
 | `AUTOSIGN_BROWSER_SESSION_TIMEOUT_SECONDS` | `900` | 交互登录会话最大闲置秒数 |
 | `AUTOSIGN_BROWSER_SESSION_CLEANUP_POLL_SECONDS` | `60` | 后台清理过期交互会话的轮询秒数 |
-| `AUTOSIGN_BROWSER_PROXY_SERVER` | 无 | 可选 Playwright HTTP/SOCKS 代理；可能包含凭据，不要提交 |
+| `AUTOSIGN_BROWSER_PROXY_SERVER` | 无 | 可选浏览器 HTTP/SOCKS 代理；同时用于延迟接管登录与自动签到，可能包含凭据，不要提交 |
 | `AUTOSIGN_BROWSER_PROXY_BYPASS` | 无 | 逗号分隔的代理绕过域名 |
 | `AUTOSIGN_SCHEDULER_POLL_SECONDS` | `15` | 调度器轮询间隔 |
 | `AUTOSIGN_AUTH_SECURE_COOKIE` | `false` | 仅通过 HTTPS 访问时设为 `true` |

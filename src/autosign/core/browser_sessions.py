@@ -4,6 +4,7 @@ import asyncio
 import base64
 import json
 import logging
+import os
 import shutil
 import socket
 from collections.abc import AsyncIterator, Mapping
@@ -1028,14 +1029,36 @@ class DeferredChromeBrowserSessionManager(BrowserSessionManager):
                 raise BrowserStorageStateError("Unsafe native Chrome profile path.")
             profile_dir.mkdir(parents=True, exist_ok=False)
             cdp_port = self._available_loopback_port()
-            process = await asyncio.create_subprocess_exec(
+            launch_arguments = [
                 str(self._native_executable),
                 f"--user-data-dir={profile_dir}",
                 f"--remote-debugging-port={cdp_port}",
                 "--remote-debugging-address=127.0.0.1",
                 "--no-first-run",
                 "--no-default-browser-check",
-                login_url,
+            ]
+            if os.name != "nt":
+                # The NAS container runs Chromium as an unprivileged user on
+                # Xvfb.  It must be a normal X11 process during login: no
+                # Playwright launch(), headless mode or automation switches.
+                launch_arguments.extend(
+                    [
+                        "--no-sandbox",
+                        "--disable-dev-shm-usage",
+                        f"--window-size={VIEWPORT_WIDTH},{VIEWPORT_HEIGHT}",
+                        "--lang=zh-CN",
+                    ]
+                )
+            if self._proxy is not None:
+                launch_arguments.append(f"--proxy-server={self._proxy['server']}")
+                bypass = self._proxy.get("bypass")
+                if bypass:
+                    launch_arguments.append(
+                        f"--proxy-bypass-list={bypass.replace(',', ';')}"
+                    )
+            launch_arguments.append(login_url)
+            process = await asyncio.create_subprocess_exec(
+                *launch_arguments,
                 stdout=asyncio.subprocess.DEVNULL,
                 stderr=asyncio.subprocess.DEVNULL,
             )
@@ -1068,6 +1091,12 @@ class DeferredChromeBrowserSessionManager(BrowserSessionManager):
     async def focus(self, session_id: str) -> None:
         session = await self._get_native(session_id)
         self._touch_native(session)
+
+    async def mark_activity(self, session_id: str) -> None:
+        """Keep a noVNC-backed deferred session alive on real user input."""
+        session = await self._get_native(session_id)
+        async with session.operation_lock:
+            self._touch_native(session)
 
     async def login_is_complete(
         self,

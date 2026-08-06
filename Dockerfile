@@ -37,6 +37,9 @@ RUN --mount=type=cache,target=/var/cache/apt,sharing=locked \
 COPY --from=novnc-assets /usr/share/novnc /usr/share/novnc
 COPY --from=novnc-assets /usr/share/doc/novnc /usr/share/doc/novnc
 RUN chmod -R a+rX /ms-playwright
+RUN browser_executable="$(find /ms-playwright -type f -path '*/chrome-linux64/chrome' -print -quit)" \
+    && test -n "$browser_executable" \
+    && ln -s "$browser_executable" /usr/local/bin/autosign-browser
 
 COPY pyproject.toml ./
 

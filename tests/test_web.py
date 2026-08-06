@@ -210,6 +210,23 @@ def test_native_executable_selects_deferred_chrome_manager(tmp_path: Path) -> No
     )
 
 
+def test_docker_nas_uses_deferred_chromium_for_interactive_login() -> None:
+    project_root = Path(__file__).parents[1]
+    dockerfile = (project_root / "Dockerfile").read_text(encoding="utf-8")
+    for compose_name in (
+        "compose.yaml",
+        "compose.nas.yaml",
+        "compose.nas.bootstrap.yaml",
+    ):
+        compose = (project_root / compose_name).read_text(encoding="utf-8")
+        assert (
+            "AUTOSIGN_BROWSER_NATIVE_EXECUTABLE: /usr/local/bin/autosign-browser"
+            in compose
+        )
+
+    assert "ln -s \"$browser_executable\" /usr/local/bin/autosign-browser" in dockerfile
+
+
 def test_vikacg_state_import_requires_confirmation_and_preserves_old_state(
     tmp_path: Path,
     monkeypatch,
