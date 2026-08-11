@@ -1,10 +1,10 @@
 [build-system]
-requires = ["hatchling>=1.27"]
+requires = ["hatchling==1.31.0"]
 build-backend = "hatchling.build"
 
 [project]
 name = "autosign"
-version = "0.15.3"
+version = "0.16.0"
 description = "A plugin-first, self-hosted automatic sign-in platform."
 readme = "README.md"
 requires-python = ">=3.11"
@@ -12,7 +12,7 @@ dependencies = [
   "alembic>=1.16,<2",
   "cryptography>=45,<47",
   "fastapi>=0.116,<1",
-  "playwright>=1.55,<2",
+  "playwright==1.61.0",
   "pydantic-settings>=2.10,<3",
   "sqlalchemy>=2.0,<3",
   "tzdata>=2025.2",

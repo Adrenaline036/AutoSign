@@ -158,9 +158,15 @@ def _inspect_contents(contents: _BundleContents) -> BackupInspection:
 
 def _snapshot_database(source_path: Path, destination_path: Path) -> None:
     try:
-        source = sqlite3.connect(f"file:{source_path.as_posix()}?mode=ro", uri=True)
+        source = sqlite3.connect(
+            f"file:{source_path.as_posix()}?mode=ro",
+            uri=True,
+            timeout=5,
+        )
         destination = sqlite3.connect(destination_path)
         try:
+            source.execute("PRAGMA busy_timeout=5000")
+            source.execute("PRAGMA query_only=ON")
             source.backup(destination)
         finally:
             destination.close()

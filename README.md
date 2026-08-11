@@ -17,14 +17,18 @@ AutoSign 是一个面向 NAS 与 Docker 的自托管自动签到平台。它提�
 - 浏览器状态支持 Cookie、localStorage、sessionStorage 与 IndexedDB。
 - 修复 Playwright 1.55 在部分 IndexedDB 外部键上的导出/恢复问题。
 - 登录状态恢复、按钮点击和签到结果均经过独立验证，不会把“点击过”直接当作“签到成功”。
+- 闲置交互登录会话由后台主动回收，不再长期占用 Chromium Context。
+- SQLite 默认使用 WAL、连接级外键检查、`busy_timeout` 与 `synchronous=NORMAL`。
+- Docker 基础镜像、Python 依赖、Playwright 与对应 Chromium revision 均显式锁定。
 
 ## 主要功能
 
 - 账户、计划、执行记录与通知渠道的 Web GUI
 - Playwright 驱动的网站原生登录与签到
-- noVNC 实时浏览器，支持弹窗、安全验证、鼠标、键盘和粘贴
+- noVNC 实时浏览器；登录期间先运行普通容器 Chromium，完成后才由 Playwright 接管并保存状态
 - AES-GCM 加密保存网站登录状态及通知凭据
 - SQLite 持久化与 Alembic 自动迁移
+- SQLite WAL 并发读写、异常退出恢复与包含 WAL 数据的一致性备份
 - 每日计划、时区、随机延迟、失败重试与手动执行
 - Uptime Kuma Push 与 NapCat/OneBot HTTP 通知
 - 每日自动通知汇总及最终签到结果推送
@@ -38,9 +42,9 @@ AutoSign 是一个面向 NAS 与 Docker 的自托管自动签到平台。它提�
 | --- | --- | --- | --- |
 | Demo | 内置 | 不访问外部网站，用于验证执行与通知链路 | 无需登录 |
 | 百度贴吧 | 内置 | 获取关注贴吧并逐一签到 | 百度原生交互登录 |
-| 百合会 | 0.2.1 | 论坛每日打卡，兼容初始 WAF 挑战 | 网站交互登录 |
+| 百合会 | 0.2.3 | 论坛每日打卡，有界等待初始百度 WAF 挑战并容忍页面切换时的瞬时正文超时 | 网站交互登录 |
 | ACGRip | 内置 | Discuz DSU 每日签到 | 网站交互登录 |
-| VikACG | 0.1.1 | 积分任务中的每日签到 | 网站交互登录 |
+| VikACG | 0.3.2 | 从 Local Storage/IndexedDB 读取账户状态，API 优先签到与令牌自动刷新 | 网站交互登录或 accountStore3 恢复 |
 
 网站页面和接口可能随时变化。插件失效时，请先检查最近执行记录与容器日志；公开 Issue 中不要附带 Cookie、Token、完整浏览器状态、真实账号或包含个人信息的页面存档。
 
@@ -53,7 +57,7 @@ flowchart LR
     SDK --> Plugins["独立站点插件"]
     Core --> DB["SQLite / Alembic"]
     Core --> Vault["AES-GCM 秘密库"]
-    Core --> Browser["Playwright / noVNC"]
+    Core --> Browser["Chromium 延迟接管 / Playwright / noVNC"]
     Core --> Notify["Kuma / NapCat"]
     Core --> Backup["加密备份"]
 ```
@@ -125,7 +129,7 @@ AutoSign 将以下浏览器状态合并保存：
 
 状态在写入 SQLite 前由 `AUTOSIGN_MASTER_KEY` 使用 AES-GCM 加密。API 和 GUI 只返回已保存秘密的名称，不回显内容。
 
-Docker 中的 Chromium 运行在虚拟显示环境。原始 VNC 服务只监听容器回环地址；noVNC 静态资源与 WebSocket 转发均要求有效的管理员会话。无需映射 `5900`，也不应将 VNC 或管理端口直接暴露到公网。
+Docker 中的 Chromium 运行在虚拟显示环境。交互登录期间 Chromium 作为普通 X11 进程启动，Playwright 不参与启动或输入；只有用户点击“登录完成，检测并保存”后，AutoSign 才通过容器回环 CDP 接管并导出状态。原始 VNC 与 CDP 均只监听容器回环地址；noVNC 静态资源与 WebSocket 转发要求有效的管理员会话。无需映射 `5900` 或调试端口，也不应将其暴露到公网。
 
 粘贴文本通过现有的管理员会话和 CSRF 校验后写入当前聚焦的远端输入框。备用输入框默认隐藏内容；文本发送后立即清空，不写入 AutoSign 数据库，成功提示也只显示字符数。
 
@@ -138,10 +142,14 @@ Docker 中的 Chromium 运行在虚拟显示环境。原始 VNC 服务只监听�
 | `AUTOSIGN_MASTER_KEY` | 无 | 加密登录状态和通知凭据；使用 `python -m autosign init-key` 生成 |
 | `AUTOSIGN_DATA_DIR` | `./data` | SQLite、日志、备份和暂存恢复目录 |
 | `AUTOSIGN_PORT` | `8000` | AutoSign 服务端口 |
+| `AUTOSIGN_DATABASE_BUSY_TIMEOUT_MS` | `2000` | SQLite 写锁冲突最大等待毫秒数；不是固定请求延迟 |
 | `AUTOSIGN_BROWSER_HEADLESS` | `true` | 是否使用无界面 Chromium；Docker 示例使用虚拟显示下的 headful 模式 |
 | `AUTOSIGN_BROWSER_HIDE_WINDOW` | `false` | 桌面开发时将原生 headful 窗口移出屏幕 |
 | `AUTOSIGN_BROWSER_LIVE_ENABLED` | `false` | 启用 noVNC 实时登录；Docker 示例已开启 |
-| `AUTOSIGN_BROWSER_PROXY_SERVER` | 无 | 可选 Playwright HTTP/SOCKS 代理；可能包含凭据，不要提交 |
+| `AUTOSIGN_BROWSER_NATIVE_EXECUTABLE` | 无 | 普通浏览器延迟接管入口；官方 Docker 示例指向镜像内固定 Chromium 启动器 |
+| `AUTOSIGN_BROWSER_SESSION_TIMEOUT_SECONDS` | `900` | 交互登录会话最大闲置秒数 |
+| `AUTOSIGN_BROWSER_SESSION_CLEANUP_POLL_SECONDS` | `60` | 后台清理过期交互会话的轮询秒数 |
+| `AUTOSIGN_BROWSER_PROXY_SERVER` | 无 | 可选浏览器 HTTP/SOCKS 代理；同时用于延迟接管登录与自动签到，可能包含凭据，不要提交 |
 | `AUTOSIGN_BROWSER_PROXY_BYPASS` | 无 | 逗号分隔的代理绕过域名 |
 | `AUTOSIGN_SCHEDULER_POLL_SECONDS` | `15` | 调度器轮询间隔 |
 | `AUTOSIGN_AUTH_SECURE_COOKIE` | `false` | 仅通过 HTTPS 访问时设为 `true` |
@@ -150,6 +158,8 @@ Docker 中的 Chromium 运行在虚拟显示环境。原始 VNC 服务只监听�
 | `AUTOSIGN_BACKUP_TIMEZONE` | `Asia/Shanghai` | 自动备份时区 |
 | `AUTOSIGN_BACKUP_RETENTION_COUNT` | `7` | 自动备份保留数量 |
 | `AUTOSIGN_BACKUP_PASSWORD` | 无 | 自动备份独立密码，至少 12 个字符 |
+
+交互登录的“活动”仅指用户对远端网页执行点击、滚轮、键盘输入或粘贴；GUI 的会话状态查询和截图刷新不会延长闲置期限。会话到期后，主 GUI 会关闭登录弹窗，容器日志会记录回收数量。
 
 `AUTOSIGN_MASTER_KEY` 和 `data/` 必须配套备份。丢失主密钥后，数据库内已有加密状态无法恢复。不要在初始化过的实例上重新生成或覆盖主密钥。
 
@@ -165,6 +175,8 @@ Docker 中的 Chromium 运行在虚拟显示环境。原始 VNC 服务只监听�
 
 首次遇到目录权限问题时，可参考 `compose.nas.bootstrap.yaml` 的一次性权限初始化服务。不要把包含个人路径、代理、固定域名解析或凭据的 NAS Compose 提交回公开仓库。
 
+公开 Dockerfile 使用带 digest 的 Python 基础镜像，并从 `requirements.docker.lock` 安装精确版本。更新基础镜像、Playwright 或锁文件时应作为明确版本变更执行完整测试；Playwright 的固定版本同时固定其下载的 Chromium revision。
+
 目标网站的可达性取决于部署网络。可使用 `AUTOSIGN_BROWSER_PROXY_SERVER` 与 `AUTOSIGN_BROWSER_PROXY_BYPASS` 做通用浏览器分流，但 AutoSign 不内置任何私人代理节点、固定 IP 或区域绕过配置。
 
 ## 通知渠道
@@ -178,6 +190,8 @@ Docker 中的 Chromium 运行在虚拟显示环境。原始 VNC 服务只监听�
 支持通过 OneBot HTTP 接口发送 QQ 通知。服务地址、访问令牌和目标 QQ/群号均作为加密秘密保存。AutoSign 与 NapCat 不在同一网络时，应先使用 VPN、反向代理或其他受控网络连接验证 HTTP 可达性。
 
 ## 加密备份与恢复
+
+运行中的数据库使用 WAL 时，加密备份通过 SQLite Online Backup API 创建一致性快照，已提交但尚未 checkpoint 回主数据库文件的记录也会包含在备份中。不要直接复制单独的 `autosign.db` 代替 AutoSign 备份功能。
 
 创建加密备份：
 

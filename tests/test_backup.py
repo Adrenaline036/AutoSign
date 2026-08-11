@@ -120,3 +120,44 @@ def test_short_password_is_rejected(
             output_dir=tmp_path / "backups",
             autosign_version="test-version",
         )
+
+
+def test_backup_includes_committed_rows_still_in_wal(tmp_path: Path) -> None:
+    database_path = tmp_path / "autosign.db"
+    database = Database(f"sqlite:///{database_path.as_posix()}")
+    database.migrate()
+    key = SecretCipher.generate_key()
+    VaultService(database, SecretCipher(key)).initialize_key_check()
+    try:
+        with database.engine.connect() as connection:
+            connection.exec_driver_sql("PRAGMA wal_autocheckpoint=0")
+        with database.session() as session:
+            session.add(Account(plugin_id="demo", label="Committed in WAL"))
+            session.commit()
+
+        wal_path = database_path.with_name(f"{database_path.name}-wal")
+        assert wal_path.is_file()
+        assert wal_path.stat().st_size > 0
+
+        archive = create_backup(
+            database_path=database_path,
+            master_key=key,
+            password=PASSWORD,
+            output_dir=tmp_path / "backups",
+            autosign_version="wal-test",
+        )
+        inspection = inspect_backup(archive, PASSWORD)
+        restore_dir = tmp_path / "wal-restore"
+        stage_restore(archive, PASSWORD, restore_dir)
+
+        assert inspection.counts["accounts"] == 1
+        restored = sqlite3.connect(restore_dir / "autosign.db")
+        try:
+            assert restored.execute("SELECT label FROM accounts").fetchone() == (
+                "Committed in WAL",
+            )
+            assert restored.execute("PRAGMA quick_check").fetchone() == ("ok",)
+        finally:
+            restored.close()
+    finally:
+        database.dispose()

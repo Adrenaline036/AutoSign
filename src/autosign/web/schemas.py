@@ -81,6 +81,19 @@ class BrowserSessionCloseResult(BaseModel):
     secret_names: list[str]
 
 
+class VikacgStateImport(BaseModel):
+    raw_json: SecretStr
+    confirm_overwrite: bool = False
+
+
+class VikacgStateImportRead(BaseModel):
+    imported: bool
+    token: bool
+    refresh_token: bool
+    token_refreshed: bool
+    device_profile_preserved: bool
+
+
 class AdminPasswordRequest(BaseModel):
     password: SecretStr = Field(min_length=12, max_length=200)
 

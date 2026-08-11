@@ -1,0 +1,213 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>AutoSign 独立登录浏览器</title>
+    <link rel="icon" href="data:,">
+    <style>
+      :root { color-scheme: dark; font-family: Inter, "Microsoft YaHei", system-ui, sans-serif; }
+      * { box-sizing: border-box; }
+      body { margin: 0; height: 100vh; overflow: hidden; display: flex; flex-direction: column;
+        background: #050a13; color: #e8eef8; }
+      header { min-height: 52px; display: flex; align-items: center; gap: 12px; padding: 8px 14px;
+        flex-wrap: wrap; background: #101c30; border-bottom: 1px solid #31496d; }
+      #status { flex: 1; min-width: 220px; color: #9eb0ca; overflow: hidden;
+        text-overflow: ellipsis; white-space: nowrap; }
+      .paste-tools { display: flex; align-items: center; gap: 8px; }
+      #paste-input { width: min(28vw, 320px); min-width: 180px; border: 1px solid #456187;
+        border-radius: 9px; padding: 8px 10px; background: #081221; color: #e8eef8; font: inherit; }
+      #paste-input:focus { border-color: #4fa4ff; outline: 2px solid rgb(79 164 255 / 25%); }
+      button { border: 0; border-radius: 9px; padding: 8px 13px; background: #2a405f;
+        color: white; font: inherit; font-weight: 700; cursor: pointer; }
+      #paste-send { background: #177f78; }
+      #stage { position: relative; flex: 1; min-height: 0; display: grid; place-items: center;
+        overflow: hidden; background: #050a13; outline: none; }
+      #screen { display: block; max-width: 100%; max-height: 100%; object-fit: contain;
+        cursor: default; user-select: none; }
+      #keyboard { position: absolute; width: 1px; height: 1px; opacity: 0; pointer-events: none; }
+      #loading { position: absolute; inset: 0; display: grid; place-items: center;
+        color: #9eb0ca; pointer-events: none; }
+      #loading[hidden] { display: none; }
+      .error { color: #ffabb5 !important; }
+    </style>
+  </head>
+  <body>
+    <header>
+      <strong>AutoSign 独立登录浏览器</strong>
+      <span id="status">正在连接本机 Chromium…</span>
+      <div class="paste-tools">
+        <input id="paste-input" type="password" maxlength="4096" autocomplete="off"
+          autocapitalize="off" spellcheck="false" placeholder="先点远端输入框，再在此粘贴">
+        <button id="paste-toggle" type="button">显示</button>
+        <button id="paste-send" type="button">发送粘贴内容</button>
+      </div>
+      <button id="close" type="button">完成操作，关闭本页</button>
+    </header>
+    <div id="stage" tabindex="0" role="application" aria-label="AutoSign 远程浏览器画面">
+      <img id="screen" alt="远程浏览器画面" draggable="false">
+      <input id="keyboard" type="text" autocomplete="off" autocapitalize="off"
+        spellcheck="false" aria-label="远程浏览器键盘输入">
+      <div id="loading">正在加载 Chromium 登录画面…</div>
+    </div>
+    <script>
+      const sessionId = location.pathname.split("/").filter(Boolean).at(-2);
+      const status = document.querySelector("#status");
+      const screen = document.querySelector("#screen");
+      const keyboard = document.querySelector("#keyboard");
+      const pasteInput = document.querySelector("#paste-input");
+      const pasteToggle = document.querySelector("#paste-toggle");
+      const loading = document.querySelector("#loading");
+      let csrfToken = null;
+      let sessionInfo = null;
+      let pollTimer = null;
+      let frameUrl = null;
+      let requestActive = false;
+      let remoteInputArmed = false;
+      let inputQueue = Promise.resolve();
+
+      async function getCsrfToken() {
+        if (csrfToken) return csrfToken;
+        const response = await fetch("/api/v1/auth/status", {
+          cache: "no-store", credentials: "same-origin"
+        });
+        if (!response.ok) throw new Error("管理员登录状态已失效，请返回 AutoSign 重新登录。");
+        const auth = await response.json();
+        if (!auth.authenticated || !auth.csrf_token) {
+          throw new Error("管理员登录状态已失效，请返回 AutoSign 重新登录。");
+        }
+        csrfToken = auth.csrf_token;
+        return csrfToken;
+      }
+
+      async function api(path, options = {}) {
+        const method = (options.method || "GET").toUpperCase();
+        const headers = {...(options.headers || {})};
+        if (!['GET', 'HEAD', 'OPTIONS'].includes(method)) {
+          headers["X-AutoSign-CSRF"] = await getCsrfToken();
+          headers["Content-Type"] = "application/json";
+        }
+        let response;
+        try {
+          response = await fetch(path, {...options, headers, credentials: "same-origin"});
+        } catch {
+          throw new Error("无法连接 AutoSign 服务，请确认本机 UI 预览仍在运行。");
+        }
+        if (!response.ok) {
+          let message = `请求失败（${response.status}）`;
+          try { message = (await response.json()).detail || message; } catch {}
+          throw new Error(message);
+        }
+        return response;
+      }
+
+      function reportError(error) {
+        status.textContent = error instanceof Error ? error.message : "远程浏览器连接失败。";
+        status.className = "error";
+      }
+
+      function scheduleFrame(delay = 700) {
+        window.clearTimeout(pollTimer);
+        pollTimer = window.setTimeout(refreshFrame, delay);
+      }
+
+      async function refreshFrame() {
+        if (requestActive) return;
+        requestActive = true;
+        try {
+          const infoResponse = await api(`/api/v1/browser-sessions/${sessionId}`);
+          sessionInfo = await infoResponse.json();
+          const frameResponse = await api(
+            `/api/v1/browser-sessions/${sessionId}/screenshot?t=${Date.now()}`
+          );
+          const nextUrl = URL.createObjectURL(await frameResponse.blob());
+          const previousUrl = frameUrl;
+          frameUrl = nextUrl;
+          screen.src = nextUrl;
+          if (previousUrl) URL.revokeObjectURL(previousUrl);
+          status.textContent = sessionInfo.title || sessionInfo.url || "远程浏览器已连接";
+          status.className = "";
+        } catch (error) {
+          reportError(error);
+        } finally {
+          requestActive = false;
+          scheduleFrame(1200);
+        }
+      }
+
+      function queueInput(path, body) {
+        inputQueue = inputQueue
+          .then(() => api(path, {method: "POST", body: JSON.stringify(body)}))
+          .then(() => refreshFrame())
+          .catch(reportError);
+        return inputQueue;
+      }
+
+      function sendPastedText() {
+        const text = pasteInput.value;
+        if (!text) return;
+        if (!remoteInputArmed) {
+          status.textContent = "请先点击远端网页中的目标输入框，再发送粘贴内容。";
+          status.className = "error";
+          return;
+        }
+        pasteInput.value = "";
+        queueInput(`/api/v1/browser-sessions/${sessionId}/type`, {text});
+        keyboard.focus({preventScroll: true});
+      }
+
+      screen.addEventListener("load", () => {
+        loading.hidden = true;
+      });
+      screen.addEventListener("click", (event) => {
+        if (!sessionInfo) return;
+        const rect = screen.getBoundingClientRect();
+        const x = (event.clientX - rect.left) * sessionInfo.viewport_width / rect.width;
+        const y = (event.clientY - rect.top) * sessionInfo.viewport_height / rect.height;
+        remoteInputArmed = true;
+        keyboard.focus({preventScroll: true});
+        queueInput(`/api/v1/browser-sessions/${sessionId}/click`, {x, y});
+      });
+      keyboard.addEventListener("input", () => {
+        const text = keyboard.value;
+        keyboard.value = "";
+        if (text) queueInput(`/api/v1/browser-sessions/${sessionId}/type`, {text});
+      });
+      keyboard.addEventListener("paste", (event) => {
+        const text = event.clipboardData?.getData("text/plain") || "";
+        if (!text) return;
+        event.preventDefault();
+        event.stopPropagation();
+        keyboard.value = "";
+        queueInput(`/api/v1/browser-sessions/${sessionId}/type`, {text});
+      });
+      keyboard.addEventListener("keydown", (event) => {
+        const keys = new Set([
+          "Tab", "Enter", "Backspace", "Escape", "Delete", "ArrowUp", "ArrowDown",
+          "ArrowLeft", "ArrowRight", "Home", "End", "PageUp", "PageDown"
+        ]);
+        if (!keys.has(event.key)) return;
+        event.preventDefault();
+        queueInput(`/api/v1/browser-sessions/${sessionId}/press`, {key: event.key});
+      });
+      pasteToggle.addEventListener("click", () => {
+        const showing = pasteInput.type === "text";
+        pasteInput.type = showing ? "password" : "text";
+        pasteToggle.textContent = showing ? "显示" : "隐藏";
+        pasteInput.focus({preventScroll: true});
+      });
+      pasteInput.addEventListener("keydown", (event) => {
+        if (event.key !== "Enter") return;
+        event.preventDefault();
+        sendPastedText();
+      });
+      document.querySelector("#paste-send").addEventListener("click", sendPastedText);
+      document.querySelector("#close").addEventListener("click", () => window.close());
+      window.addEventListener("beforeunload", () => {
+        window.clearTimeout(pollTimer);
+        if (frameUrl) URL.revokeObjectURL(frameUrl);
+      });
+      void refreshFrame();
+    </script>
+  </body>
+</html>
