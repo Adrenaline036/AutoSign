@@ -149,6 +149,8 @@ Docker 中的 Chromium 运行在虚拟显示环境。交互登录期间 Chromium
 | `AUTOSIGN_BROWSER_NATIVE_EXECUTABLE` | 无 | 普通浏览器延迟接管入口；官方 Docker 示例指向镜像内固定 Chromium 启动器 |
 | `AUTOSIGN_BROWSER_SESSION_TIMEOUT_SECONDS` | `900` | 交互登录会话最大闲置秒数 |
 | `AUTOSIGN_BROWSER_SESSION_CLEANUP_POLL_SECONDS` | `60` | 后台清理过期交互会话的轮询秒数 |
+| `AUTOSIGN_BROWSER_AUTOMATION_CAPACITY` | `2` | 同时执行的浏览器自动化操作上限；NAS 内存压力较高时可降为 `1` |
+| `AUTOSIGN_BROWSER_INTERACTIVE_CAPACITY` | `1` | 独立预留的交互登录会话上限，不与自动签到共享配额 |
 | `AUTOSIGN_BROWSER_PROXY_SERVER` | 无 | 可选浏览器 HTTP/SOCKS 代理；同时用于延迟接管登录与自动签到，可能包含凭据，不要提交 |
 | `AUTOSIGN_BROWSER_PROXY_BYPASS` | 无 | 逗号分隔的代理绕过域名 |
 | `AUTOSIGN_SCHEDULER_POLL_SECONDS` | `15` | 调度器轮询间隔 |

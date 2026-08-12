@@ -10,6 +10,7 @@ import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+import autosign.core.browser_sessions as browser_sessions_module
 from autosign.core.browser_sessions import (
     BROWSER_STATE_SECRET,
     PASSWORD_FORM_GUARD_SCRIPT,
@@ -509,6 +510,41 @@ class FakeDeferredPlaywright:
         self.chromium = FakeCdpChromium(browser)
 
 
+class FakeLaunchingChromium:
+    def __init__(self) -> None:
+        self.launch_calls = 0
+        self.browser = FakeBrowser()
+
+    async def launch(self, **_kwargs) -> FakeBrowser:
+        self.launch_calls += 1
+        await asyncio.sleep(0.01)
+        return self.browser
+
+
+class FakeFailingLaunchingChromium(FakeLaunchingChromium):
+    async def launch(self, **_kwargs) -> FakeBrowser:
+        self.launch_calls += 1
+        raise RuntimeError("launch failed")
+
+
+class FakeStartingPlaywright:
+    def __init__(self, chromium: FakeLaunchingChromium) -> None:
+        self.chromium = chromium
+        self.stop_calls = 0
+
+    async def stop(self) -> None:
+        self.stop_calls += 1
+
+
+class FakePlaywrightStarter:
+    def __init__(self, playwright: FakeStartingPlaywright) -> None:
+        self.playwright = playwright
+
+    async def start(self) -> FakeStartingPlaywright:
+        await asyncio.sleep(0)
+        return self.playwright
+
+
 async def _start_native_session(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -650,6 +686,7 @@ async def test_deferred_chrome_save_returns_state_and_cleans_up(
 
     monkeypatch.setattr(manager, "_validate_storage_state", accept_state)
     profile_dir = manager._native_sessions[info.id].profile_dir
+    assert (await manager.capacity_snapshot()).interactive_active == 1
     state_json = await manager.close(info.id, save_state=True)
     state = json.loads(state_json or "{}")
 
@@ -662,6 +699,7 @@ async def test_deferred_chrome_save_returns_state_and_cleans_up(
     assert browser.closed is True
     assert process.terminated is True
     assert not profile_dir.exists()
+    assert (await manager.capacity_snapshot()).interactive_active == 0
 
 
 @pytest.mark.asyncio
@@ -742,6 +780,118 @@ def test_browser_manager_can_hide_headful_window_offscreen() -> None:
     assert manager._headless is False
     assert "--window-position=-32000,-32000" in manager._launch_args
     assert f"--window-size={VIEWPORT_WIDTH},{VIEWPORT_HEIGHT}" in manager._launch_args
+
+
+@pytest.mark.asyncio
+async def test_concurrent_automation_cold_start_launches_one_browser(monkeypatch) -> None:
+    chromium = FakeLaunchingChromium()
+    playwright = FakeStartingPlaywright(chromium)
+    monkeypatch.setattr(
+        browser_sessions_module,
+        "async_playwright",
+        lambda: FakePlaywrightStarter(playwright),
+    )
+    manager = BrowserSessionManager(automation_capacity=10)
+
+    async def run_once() -> None:
+        async with manager.automation(
+            storage_state_json='{"cookies":[],"origins":[]}',
+        ):
+            await asyncio.sleep(0)
+
+    await asyncio.gather(*(run_once() for _ in range(10)))
+
+    assert chromium.launch_calls == 1
+    assert len(chromium.browser.contexts) == 10
+    assert (await manager.capacity_snapshot()).automation_active == 0
+    await manager.close_all()
+
+
+@pytest.mark.asyncio
+async def test_browser_launch_failure_stops_partial_playwright(monkeypatch) -> None:
+    chromium = FakeFailingLaunchingChromium()
+    playwright = FakeStartingPlaywright(chromium)
+    monkeypatch.setattr(
+        browser_sessions_module,
+        "async_playwright",
+        lambda: FakePlaywrightStarter(playwright),
+    )
+    manager = BrowserSessionManager()
+
+    with pytest.raises(RuntimeError, match="launch failed"):
+        async with manager.automation(
+            storage_state_json='{"cookies":[],"origins":[]}',
+        ):
+            pass
+
+    assert playwright.stop_calls == 1
+    assert manager._playwright is None
+    assert manager._browser is None
+    assert (await manager.capacity_snapshot()).automation_active == 0
+
+
+@pytest.mark.asyncio
+async def test_interactive_capacity_remains_available_when_automation_is_full() -> None:
+    manager = BrowserSessionManager(automation_capacity=2, interactive_capacity=1)
+    manager._browser = FakeBrowser()
+    state = '{"cookies":[],"origins":[]}'
+    first = manager.automation(storage_state_json=state)
+    second = manager.automation(storage_state_json=state)
+    third = manager.automation(storage_state_json=state)
+    await first.__aenter__()
+    await second.__aenter__()
+    third_entry = asyncio.create_task(third.__aenter__())
+    await asyncio.sleep(0)
+
+    interactive = await manager.start(
+        account_id="interactive-account",
+        login_url="https://example.test/login",
+    )
+    snapshot = await manager.capacity_snapshot()
+    assert snapshot.automation_active == 2
+    assert snapshot.automation_waiting == 1
+    assert snapshot.interactive_active == 1
+
+    await manager.close(interactive.id, save_state=False)
+    await first.__aexit__(None, None, None)
+    await asyncio.wait_for(third_entry, timeout=1)
+    await third.__aexit__(None, None, None)
+    await second.__aexit__(None, None, None)
+    assert (await manager.capacity_snapshot()).automation_active == 0
+
+
+@pytest.mark.asyncio
+async def test_close_all_closes_active_automation_and_drains_capacity() -> None:
+    manager = BrowserSessionManager(automation_capacity=1)
+    fake_browser = FakeBrowser()
+    manager._browser = fake_browser
+    entered = asyncio.Event()
+    context_closed = asyncio.Event()
+
+    async def run_automation() -> None:
+        async with manager.automation(
+            storage_state_json='{"cookies":[],"origins":[]}',
+        ):
+            context = fake_browser.contexts[0]
+            original_close = context.close
+
+            async def close_and_signal() -> None:
+                await original_close()
+                context_closed.set()
+
+            context.close = close_and_signal  # type: ignore[method-assign]
+            entered.set()
+            await context_closed.wait()
+
+    operation = asyncio.create_task(run_automation())
+    await entered.wait()
+    await asyncio.wait_for(manager.close_all(), timeout=1)
+    await asyncio.wait_for(operation, timeout=1)
+
+    snapshot = await manager.capacity_snapshot()
+    assert fake_browser.contexts[0].closed is True
+    assert snapshot.automation_active == 0
+    assert snapshot.closing is True
 
 
 @pytest.mark.asyncio

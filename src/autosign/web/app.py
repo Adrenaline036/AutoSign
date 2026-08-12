@@ -4,7 +4,6 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from time import monotonic
 from typing import Any
 from urllib.parse import urljoin, urlparse
 
@@ -14,6 +13,10 @@ from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel, Field
 
 from autosign import __version__
+from autosign.core.account_operations import (
+    AccountOperationGate,
+    AccountOperationRejectedError,
+)
 from autosign.core.auth import (
     SESSION_COOKIE_NAME,
     AdminAuthService,
@@ -32,6 +35,7 @@ from autosign.core.browser_sessions import (
 )
 from autosign.core.config import Settings, get_settings
 from autosign.core.db import Account, Database
+from autosign.core.login_limiter import LoginAttemptLimiter
 from autosign.core.plugin_registry import PluginRegistry
 from autosign.core.runner import PluginRunner
 from autosign.core.security import SecretCipher
@@ -62,21 +66,26 @@ from autosign.web.schemas import (
     BackupActionRead,
     BackupSettingsWrite,
     BackupStatusRead,
+    BrowserCapacityRead,
     BrowserClick,
     BrowserKeyInput,
     BrowserSessionClose,
     BrowserSessionCloseResult,
     BrowserSessionRead,
     BrowserTextInput,
+    CapacityPoolRead,
+    CoordinatorStatusRead,
     ExecutionRead,
     NotificationChannelAssignmentWrite,
     NotificationChannelDeliveryRead,
     NotificationChannelRead,
     NotificationChannelWrite,
     ScheduleRead,
+    SchedulerStatusRead,
     ScheduleWrite,
     SecretList,
     SecretWrite,
+    SystemStatusRead,
     VikacgStateImport,
     VikacgStateImportRead,
 )
@@ -95,6 +104,7 @@ def create_app(
     browser_manager_override: BrowserSessionManager | None = None,
 ) -> FastAPI:
     settings = settings_override or get_settings()
+    app_started_at = datetime.now(UTC)
     master_key = settings.require_master_key()
     registry = PluginRegistry()
     runner = PluginRunner(registry)
@@ -120,6 +130,8 @@ def create_app(
             else None
         ),
         "proxy_bypass": settings.browser_proxy_bypass,
+        "automation_capacity": settings.browser_automation_capacity,
+        "interactive_capacity": settings.browser_interactive_capacity,
     }
     if browser_manager_override is not None:
         browser_sessions = browser_manager_override
@@ -136,6 +148,7 @@ def create_app(
         poll_seconds=settings.browser_session_cleanup_poll_seconds,
     )
     executions = ExecutionService(database, runner)
+    account_operations = AccountOperationGate()
     schedules = ScheduleService(database)
     notifications = NotificationChannelService(database, cipher)
     backup_password = (
@@ -166,38 +179,41 @@ def create_app(
         trigger: str = "manual",
         attempt: int = 1,
     ) -> SignResult:
-        account = accounts.get(account_id)
-        if not account.enabled:
-            raise ValueError("Disabled accounts cannot be executed.")
-        plugin = registry.get(account.plugin_id)
-        storage_state_json: str | None = None
-        if PluginCapability.BROWSER_SIGN in plugin.manifest.capabilities:
-            try:
-                storage_state_json = vault.get(account.id, BROWSER_STATE_SECRET)
-            except LookupError:
-                pass
-        execute_options = {
-            "account_id": account.id,
-            "account_label": account.label,
-            "settings": account.settings_json,
-            "secrets": vault.for_account(account.id),
-            "trigger": trigger,
-            "attempt": attempt,
-        }
-        if storage_state_json is None:
-            return await executions.execute(account.plugin_id, **execute_options)
-        async with browser_sessions.automation(
-            storage_state_json=storage_state_json,
-        ) as browser:
-            result = await executions.execute(
-                account.plugin_id,
-                browser=browser,
-                **execute_options,
-            )
-            if result.verified:
-                refreshed_state = await browser_sessions.capture_automation_state(browser)
-                vault.set(account.id, BROWSER_STATE_SECRET, refreshed_state)
-            return result
+        async with account_operations.use(account_id):
+            account = accounts.get(account_id)
+            if not account.enabled:
+                raise ValueError("Disabled accounts cannot be executed.")
+            plugin = registry.get(account.plugin_id)
+            storage_state_json: str | None = None
+            if PluginCapability.BROWSER_SIGN in plugin.manifest.capabilities:
+                try:
+                    storage_state_json = vault.get(account.id, BROWSER_STATE_SECRET)
+                except LookupError:
+                    pass
+            execute_options = {
+                "account_id": account.id,
+                "account_label": account.label,
+                "settings": account.settings_json,
+                "secrets": vault.for_account(account.id),
+                "trigger": trigger,
+                "attempt": attempt,
+            }
+            if storage_state_json is None:
+                return await executions.execute(account.plugin_id, **execute_options)
+            async with browser_sessions.automation(
+                storage_state_json=storage_state_json,
+            ) as browser:
+                result = await executions.execute(
+                    account.plugin_id,
+                    browser=browser,
+                    **execute_options,
+                )
+                if result.verified:
+                    refreshed_state = await browser_sessions.capture_automation_state(
+                        browser
+                    )
+                    vault.set(account.id, BROWSER_STATE_SECRET, refreshed_state)
+                return result
 
     async def notify_final_result(account_id: str, result: SignResult) -> None:
         account = accounts.get(account_id)
@@ -266,12 +282,13 @@ def create_app(
     app.state.browser_sessions = browser_sessions
     app.state.browser_cleanup = browser_cleanup
     app.state.executions = executions
+    app.state.account_operations = account_operations
     app.state.schedules = schedules
     app.state.scheduler = scheduler
     app.state.notifications = notifications
     app.state.backups = backups
     app.state.backup_coordinator = backup_coordinator
-    failed_logins: dict[str, list[float]] = {}
+    login_limiter = LoginAttemptLimiter()
 
     if settings.browser_live_enabled:
         if not settings.browser_novnc_root.is_dir():
@@ -480,19 +497,18 @@ def create_app(
     ) -> AuthStatus:
         if not auth.is_configured():
             raise HTTPException(status_code=409, detail="Administrator password is not configured.")
+        # Deliberately use the direct peer address. X-Forwarded-For is untrusted
+        # until AutoSign has an explicit trusted-proxy configuration contract.
         client_key = request.client.host if request.client else "unknown"
-        now = monotonic()
-        attempts = [stamp for stamp in failed_logins.get(client_key, []) if now - stamp < 60]
-        failed_logins[client_key] = attempts
-        if len(attempts) >= 5:
+        if login_limiter.is_limited(client_key):
             raise HTTPException(
                 status_code=429,
                 detail="Too many failed login attempts. Try again in one minute.",
             )
         if not auth.verify_password(request_data.password.get_secret_value()):
-            attempts.append(now)
+            login_limiter.record_failure(client_key)
             raise HTTPException(status_code=401, detail="Administrator password is incorrect.")
-        failed_logins.pop(client_key, None)
+        login_limiter.clear(client_key)
         session = auth.issue_session()
         set_auth_cookie(response, session.token)
         return AuthStatus(
@@ -509,6 +525,38 @@ def create_app(
     @app.get("/healthz")
     async def health() -> dict[str, str]:
         return {"status": "ok", "version": __version__}
+
+    @app.get("/api/v1/system/status", response_model=SystemStatusRead)
+    async def system_status() -> SystemStatusRead:
+        capacity = await browser_sessions.capacity_snapshot()
+        return SystemStatusRead(
+            version=__version__,
+            uptime_seconds=max(
+                0,
+                int((datetime.now(UTC) - app_started_at).total_seconds()),
+            ),
+            browser_capacity=BrowserCapacityRead(
+                automation=CapacityPoolRead(
+                    limit=capacity.automation_limit,
+                    active=capacity.automation_active,
+                    waiting=capacity.automation_waiting,
+                ),
+                interactive=CapacityPoolRead(
+                    limit=capacity.interactive_limit,
+                    active=capacity.interactive_active,
+                    waiting=capacity.interactive_waiting,
+                ),
+                closing=capacity.closing,
+            ),
+            scheduler=SchedulerStatusRead(
+                running=scheduler.running,
+                active_jobs=scheduler.active_job_count,
+            ),
+            coordinators=CoordinatorStatusRead(
+                browser_cleanup_running=browser_cleanup.running,
+                backup_running=backup_coordinator.running,
+            ),
+        )
 
     @app.get("/api/v1/plugins", response_model=list[PluginManifest])
     async def list_plugins() -> list[PluginManifest]:
@@ -601,7 +649,10 @@ def create_app(
     @app.post("/api/v1/accounts/{account_id}/delete", status_code=204)
     async def delete_account(account_id: str, request: AccountDelete) -> None:
         try:
-            accounts.delete(account_id, confirm_label=request.confirm_label)
+            async with account_operations.delete(account_id):
+                accounts.delete(account_id, confirm_label=request.confirm_label)
+        except AccountOperationRejectedError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
         except (AccountNotFoundError, ValueError) as exc:
             raise account_error(exc) from exc
 
@@ -975,7 +1026,7 @@ def create_app(
             return result
         except AccountNotFoundError as exc:
             raise account_error(exc) from exc
-        except ValueError as exc:
+        except (AccountOperationRejectedError, ValueError) as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc
         except BrowserStorageStateError as exc:
             raise HTTPException(status_code=409, detail=str(exc)) from exc

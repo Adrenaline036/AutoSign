@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import logging
 from dataclasses import dataclass
 from datetime import UTC, datetime
@@ -33,7 +32,6 @@ class ExecutionService:
     def __init__(self, database: Database, runner: PluginRunner) -> None:
         self._database = database
         self._runner = runner
-        self._account_locks: dict[str, asyncio.Lock] = {}
         self._logger = logging.getLogger("autosign.executions")
 
     async def execute(
@@ -48,49 +46,47 @@ class ExecutionService:
         trigger: str = "manual",
         attempt: int = 1,
     ) -> SignResult:
-        lock = self._account_locks.setdefault(account_id, asyncio.Lock())
-        async with lock:
-            started_at = datetime.now(UTC)
-            started = perf_counter()
-            try:
-                result = await self._runner.execute(
-                    plugin_id,
-                    account_id=account_id,
-                    account_label=account_label,
-                    settings=settings,
-                    secrets=secrets,
-                    browser=browser,
-                )
-            except Exception as exc:
-                self._logger.exception(
-                    "Account execution failed for account %s using plugin %s",
-                    account_id,
-                    plugin_id,
-                )
-                result = SignResult(
-                    status=SignStatus.FAILED,
-                    message=f"签到执行发生错误：{exc}",
-                    verified=False,
-                    details={"error_type": type(exc).__name__},
-                    plugin_id=plugin_id,
-                    account_id=account_id,
-                    executed_at=datetime.now(UTC),
-                    duration_ms=round((perf_counter() - started) * 1000),
-                )
-            finished_at = result.executed_at or datetime.now(UTC)
-            result.details = {
-                **result.details,
-                "trigger": trigger,
-                "attempt": attempt,
-            }
-            record_id = self._record(
+        started_at = datetime.now(UTC)
+        started = perf_counter()
+        try:
+            result = await self._runner.execute(
+                plugin_id,
                 account_id=account_id,
-                result=result,
-                started_at=started_at,
-                finished_at=finished_at,
+                account_label=account_label,
+                settings=settings,
+                secrets=secrets,
+                browser=browser,
             )
-            result.details["execution_record_id"] = record_id
-            return result
+        except Exception as exc:
+            self._logger.exception(
+                "Account execution failed for account %s using plugin %s",
+                account_id,
+                plugin_id,
+            )
+            result = SignResult(
+                status=SignStatus.FAILED,
+                message=f"签到执行发生错误：{exc}",
+                verified=False,
+                details={"error_type": type(exc).__name__},
+                plugin_id=plugin_id,
+                account_id=account_id,
+                executed_at=datetime.now(UTC),
+                duration_ms=round((perf_counter() - started) * 1000),
+            )
+        finished_at = result.executed_at or datetime.now(UTC)
+        result.details = {
+            **result.details,
+            "trigger": trigger,
+            "attempt": attempt,
+        }
+        record_id = self._record(
+            account_id=account_id,
+            result=result,
+            started_at=started_at,
+            finished_at=finished_at,
+        )
+        result.details["execution_record_id"] = record_id
+        return result
 
     def list(self, *, account_id: str | None = None, limit: int = 50) -> list[ExecutionView]:
         statement = (

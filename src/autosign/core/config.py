@@ -23,6 +23,8 @@ class Settings(BaseSettings):
     database_busy_timeout_ms: int = Field(default=2000, ge=0, le=60_000)
     browser_session_timeout_seconds: int = Field(default=900, ge=1)
     browser_session_cleanup_poll_seconds: float = Field(default=60, gt=0)
+    browser_automation_capacity: int = Field(default=2, ge=1, le=16)
+    browser_interactive_capacity: int = Field(default=1, ge=1, le=8)
     browser_headless: bool = True
     browser_hide_window: bool = False
     browser_native_window: bool = False
