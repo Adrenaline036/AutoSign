@@ -238,6 +238,14 @@ class ScheduleCoordinator:
         if self._loop_task is None:
             self._loop_task = asyncio.create_task(self._run_loop())
 
+    @property
+    def running(self) -> bool:
+        return self._loop_task is not None and not self._loop_task.done()
+
+    @property
+    def active_job_count(self) -> int:
+        return sum(not job.done() for job in self._jobs)
+
     async def stop(self) -> None:
         if self._loop_task is not None:
             self._loop_task.cancel()

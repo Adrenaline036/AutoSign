@@ -211,6 +211,36 @@ class BackupActionRead(BaseModel):
     status: BackupStatusRead
 
 
+class CapacityPoolRead(BaseModel):
+    limit: int
+    active: int
+    waiting: int
+
+
+class BrowserCapacityRead(BaseModel):
+    automation: CapacityPoolRead
+    interactive: CapacityPoolRead
+    closing: bool
+
+
+class SchedulerStatusRead(BaseModel):
+    running: bool
+    active_jobs: int
+
+
+class CoordinatorStatusRead(BaseModel):
+    browser_cleanup_running: bool
+    backup_running: bool
+
+
+class SystemStatusRead(BaseModel):
+    version: str
+    uptime_seconds: int
+    browser_capacity: BrowserCapacityRead
+    scheduler: SchedulerStatusRead
+    coordinators: CoordinatorStatusRead
+
+
 class BackupSettingsWrite(BaseModel):
     enabled: bool
     daily_time: str = Field(pattern=r"^(?:[01]\d|2[0-3]):[0-5]\d$")

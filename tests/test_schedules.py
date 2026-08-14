@@ -8,6 +8,7 @@ from pathlib import Path
 import pytest
 from sqlalchemy import select
 
+from autosign.core.account_operations import AccountOperationRejectedError
 from autosign.core.db import Database, Schedule
 from autosign.core.services.accounts import AccountService
 from autosign.core.services.schedules import ScheduleCoordinator, ScheduleService
@@ -71,3 +72,25 @@ async def test_failed_schedule_retries_then_stops_on_success(tmp_path: Path) -> 
 
     assert attempts == [1, 2]
     assert service.get_for_account(account_id).last_status == "success"
+
+
+@pytest.mark.asyncio
+async def test_schedule_rejected_by_account_deletion_records_failure_without_notification(
+    tmp_path: Path,
+) -> None:
+    _, service, account_id = create_schedule(tmp_path)
+    schedule = service.get_for_account(account_id)
+    assert schedule is not None
+    notifications: list[SignResult] = []
+
+    async def execute(_account_id: str, _trigger: str, _attempt: int) -> SignResult:
+        raise AccountOperationRejectedError("account deletion is queued")
+
+    async def notify(_account_id: str, result: SignResult) -> None:
+        notifications.append(result)
+
+    coordinator = ScheduleCoordinator(service, execute, notify)
+    await coordinator._execute(schedule)
+
+    assert service.get_for_account(account_id).last_status == "failed"
+    assert notifications == []

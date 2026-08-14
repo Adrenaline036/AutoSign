@@ -16,6 +16,11 @@ from uuid import uuid4
 
 from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
 
+from autosign.core.capacity import (
+    BrowserCapacityGate,
+    BrowserCapacityLease,
+    BrowserCapacitySnapshot,
+)
 from autosign.plugin_sdk import BrowserResponse
 
 BROWSER_STATE_SECRET = "browser_storage_state"
@@ -381,6 +386,7 @@ class ActiveBrowserSession:
     page: Page
     created_at: datetime
     last_activity: datetime
+    capacity_lease: BrowserCapacityLease
     operation_lock: asyncio.Lock = field(default_factory=asyncio.Lock)
 
 
@@ -405,6 +411,8 @@ class BrowserSessionManager:
         hide_window: bool = False,
         proxy_server: str | None = None,
         proxy_bypass: str | None = None,
+        automation_capacity: int = 2,
+        interactive_capacity: int = 1,
     ) -> None:
         self._timeout = timedelta(seconds=timeout_seconds)
         self._headless = headless
@@ -423,21 +431,37 @@ class BrowserSessionManager:
                 self._proxy["bypass"] = proxy_bypass
         self._playwright: Playwright | None = None
         self._browser: Browser | None = None
+        self._browser_init_lock = asyncio.Lock()
+        self._capacity = BrowserCapacityGate(
+            automation_limit=automation_capacity,
+            interactive_limit=interactive_capacity,
+        )
+        self._automation_contexts: dict[int, BrowserContext] = {}
+        self._automation_contexts_lock = asyncio.Lock()
+        self._closing = False
         self._sessions: dict[str, ActiveBrowserSession] = {}
         self._account_sessions: dict[str, str] = {}
         self._manager_lock = asyncio.Lock()
         self._logger = BROWSER_SESSION_LOGGER
 
     async def _ensure_browser(self) -> Browser:
-        if self._browser is not None and not self._browser.is_connected():
-            await self._reset_browser_locked()
-        if self._browser is None:
-            self._playwright = await async_playwright().start()
-            self._browser = await self._playwright.chromium.launch(
-                headless=self._headless,
-                args=self._launch_args,
-            )
-        return self._browser
+        async with self._browser_init_lock:
+            if self._browser is not None and not self._browser.is_connected():
+                await self._reset_browser_resources()
+            if self._browser is None:
+                playwright = await async_playwright().start()
+                try:
+                    browser = await playwright.chromium.launch(
+                        headless=self._headless,
+                        args=self._launch_args,
+                    )
+                except BaseException:
+                    with suppress(Exception):
+                        await playwright.stop()
+                    raise
+                self._playwright = playwright
+                self._browser = browser
+            return self._browser
 
     async def start(
         self,
@@ -452,68 +476,87 @@ class BrowserSessionManager:
             if existing_id is not None:
                 await self._close_locked(existing_id, save_state=False)
 
-            storage_state = None
-            session_storage: list[dict] = []
-            if storage_state_json:
-                storage_state, session_storage = unpack_storage_state(
-                    json.loads(storage_state_json)
-                )
-            for attempt in range(2):
-                browser = await self._ensure_browser()
-                context: BrowserContext | None = None
-                try:
-                    context = await browser.new_context(
-                        storage_state=storage_state,
-                        viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
-                        locale="zh-CN",
-                        timezone_id="Asia/Shanghai",
-                        proxy=self._proxy,
+        lease = await self._capacity.acquire("interactive")
+        session_registered = False
+        context: BrowserContext | None = None
+        async with self._manager_lock:
+            try:
+                if self._closing:
+                    raise BrowserStorageStateError("Browser session manager is closing.")
+                self._log_expired(await self._cleanup_expired_locked())
+                existing_id = self._account_sessions.get(account_id)
+                if existing_id is not None:
+                    await self._close_locked(existing_id, save_state=False)
+
+                storage_state = None
+                session_storage: list[dict] = []
+                if storage_state_json:
+                    storage_state, session_storage = unpack_storage_state(
+                        json.loads(storage_state_json)
                     )
-                    restore_script = session_storage_restore_script(session_storage)
-                    if restore_script is not None:
-                        await context.add_init_script(script=restore_script)
-                    await context.add_init_script(script=PASSWORD_FORM_GUARD_SCRIPT)
-                    page = await context.new_page()
-                    await page.goto(login_url, wait_until="commit", timeout=45_000)
+                for attempt in range(2):
+                    browser = await self._ensure_browser()
+                    context = None
                     try:
-                        await page.wait_for_load_state("domcontentloaded", timeout=3_000)
-                    except Exception:
-                        pass
-                    break
-                except Exception as exc:
+                        context = await browser.new_context(
+                            storage_state=storage_state,
+                            viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
+                            locale="zh-CN",
+                            timezone_id="Asia/Shanghai",
+                            proxy=self._proxy,
+                        )
+                        restore_script = session_storage_restore_script(session_storage)
+                        if restore_script is not None:
+                            await context.add_init_script(script=restore_script)
+                        await context.add_init_script(script=PASSWORD_FORM_GUARD_SCRIPT)
+                        page = await context.new_page()
+                        await page.goto(login_url, wait_until="commit", timeout=45_000)
+                        with suppress(Exception):
+                            await page.wait_for_load_state(
+                                "domcontentloaded", timeout=3_000
+                            )
+                        break
+                    except Exception as exc:
+                        if context is not None:
+                            with suppress(Exception):
+                                await context.close()
+                        if attempt == 0 and self._is_target_closed_error(exc):
+                            await self._reset_browser()
+                            continue
+                        if (
+                            attempt == 0
+                            and storage_state is not None
+                            and self._is_storage_state_error(exc)
+                        ):
+                            storage_state = None
+                            session_storage = []
+                            continue
+                        raise
+
+                now = datetime.now(UTC)
+                session = ActiveBrowserSession(
+                    id=str(uuid4()),
+                    account_id=account_id,
+                    context=context,
+                    page=page,
+                    created_at=now,
+                    last_activity=now,
+                    capacity_lease=lease,
+                )
+                self._bind_page_lifecycle(session, page)
+                context.on(
+                    "page", lambda opened_page: self._activate_page(session, opened_page)
+                )
+                self._sessions[session.id] = session
+                self._account_sessions[account_id] = session.id
+                session_registered = True
+                return await self._info(session)
+            finally:
+                if not session_registered:
                     if context is not None:
                         with suppress(Exception):
                             await context.close()
-                    if attempt == 0 and self._is_target_closed_error(exc):
-                        await self._reset_browser_locked()
-                        continue
-                    if (
-                        attempt == 0
-                        and storage_state is not None
-                        and self._is_storage_state_error(exc)
-                    ):
-                        # Keep the encrypted state untouched, but allow the user to
-                        # open a clean interactive browser and replace it by logging
-                        # in again instead of trapping the account behind HTTP 502.
-                        storage_state = None
-                        session_storage = []
-                        continue
-                    raise
-
-            now = datetime.now(UTC)
-            session = ActiveBrowserSession(
-                id=str(uuid4()),
-                account_id=account_id,
-                context=context,
-                page=page,
-                created_at=now,
-                last_activity=now,
-            )
-            self._bind_page_lifecycle(session, page)
-            context.on("page", lambda opened_page: self._activate_page(session, opened_page))
-            self._sessions[session.id] = session
-            self._account_sessions[account_id] = session.id
-            return await self._info(session)
+                    await lease.release()
 
     async def get_info(self, session_id: str) -> BrowserSessionInfo:
         session = await self._get(session_id)
@@ -647,11 +690,13 @@ class BrowserSessionManager:
         *,
         storage_state_json: str,
     ) -> AsyncIterator[PlaywrightAutomationClient]:
-        browser = await self._ensure_browser()
-        storage_state, session_storage = unpack_storage_state(
-            json.loads(storage_state_json)
-        )
+        lease = await self._capacity.acquire("automation")
+        context: BrowserContext | None = None
         try:
+            browser = await self._ensure_browser()
+            storage_state, session_storage = unpack_storage_state(
+                json.loads(storage_state_json)
+            )
             context = await browser.new_context(
                 storage_state=storage_state,
                 viewport={"width": VIEWPORT_WIDTH, "height": VIEWPORT_HEIGHT},
@@ -659,6 +704,16 @@ class BrowserSessionManager:
                 timezone_id="Asia/Shanghai",
                 proxy=self._proxy,
             )
+            async with self._automation_contexts_lock:
+                if self._closing:
+                    raise BrowserStorageStateError("Browser session manager is closing.")
+                self._automation_contexts[id(context)] = context
+            restore_script = session_storage_restore_script(session_storage)
+            if restore_script is not None:
+                await context.add_init_script(script=restore_script)
+            await context.add_init_script(script=PASSWORD_FORM_GUARD_SCRIPT)
+            page = await context.new_page()
+            yield PlaywrightAutomationClient(page)
         except Exception as exc:
             if self._is_storage_state_error(exc):
                 raise BrowserStorageStateError(
@@ -666,15 +721,13 @@ class BrowserSessionManager:
                     "Open interactive login and save the account again."
                 ) from exc
             raise
-        restore_script = session_storage_restore_script(session_storage)
-        if restore_script is not None:
-            await context.add_init_script(script=restore_script)
-        await context.add_init_script(script=PASSWORD_FORM_GUARD_SCRIPT)
-        page = await context.new_page()
-        try:
-            yield PlaywrightAutomationClient(page)
         finally:
-            await context.close()
+            if context is not None:
+                async with self._automation_contexts_lock:
+                    self._automation_contexts.pop(id(context), None)
+                with suppress(Exception):
+                    await context.close()
+            await lease.release()
 
     async def capture_automation_state(
         self,
@@ -699,10 +752,21 @@ class BrowserSessionManager:
         return json.dumps(state, ensure_ascii=False, separators=(",", ":"))
 
     async def close_all(self) -> None:
+        self._closing = True
+        await self._capacity.begin_close()
+        async with self._automation_contexts_lock:
+            automation_contexts = list(self._automation_contexts.values())
+        for context in automation_contexts:
+            with suppress(Exception):
+                await context.close()
         async with self._manager_lock:
             for session_id in list(self._sessions):
                 await self._close_locked(session_id, save_state=False)
-            await self._reset_browser_locked()
+            await self._reset_browser()
+        await self._capacity.wait_drained()
+
+    async def capacity_snapshot(self) -> BrowserCapacitySnapshot:
+        return await self._capacity.snapshot()
 
     async def cleanup_expired(self) -> int:
         """Close idle interactive sessions without waiting for another request."""
@@ -718,7 +782,7 @@ class BrowserSessionManager:
         if session.page.is_closed() or (
             self._browser is not None and not self._browser.is_connected()
         ):
-            self._discard_session(session)
+            await self._discard_session(session)
             raise BrowserSessionNotFoundError(
                 "Browser session closed unexpectedly. Reopen interactive login."
             )
@@ -767,6 +831,7 @@ class BrowserSessionManager:
             finally:
                 with suppress(Exception):
                     await session.context.close()
+                await session.capacity_lease.release()
         return state_json
 
     async def _cleanup_expired_locked(self) -> int:
@@ -785,7 +850,7 @@ class BrowserSessionManager:
             # may have refreshed last_activity while cleanup was waiting.
             if datetime.now(UTC) - session.last_activity <= self._timeout:
                 return False
-            self._discard_session(session)
+            await self._discard_session(session)
             with suppress(Exception):
                 await session.context.close()
         return True
@@ -938,10 +1003,11 @@ class BrowserSessionManager:
             session.page = remaining_pages[-1]
             self._touch(session)
 
-    def _discard_session(self, session: ActiveBrowserSession) -> None:
+    async def _discard_session(self, session: ActiveBrowserSession) -> None:
         self._sessions.pop(session.id, None)
         if self._account_sessions.get(session.account_id) == session.id:
             self._account_sessions.pop(session.account_id, None)
+        await session.capacity_lease.release()
 
     async def _translate_target_closed(
         self,
@@ -950,16 +1016,20 @@ class BrowserSessionManager:
     ) -> None:
         if not self._is_target_closed_error(exc):
             return
-        self._discard_session(session)
+        await self._discard_session(session)
         with suppress(Exception):
             await session.context.close()
         raise BrowserSessionNotFoundError(
             "Browser session closed unexpectedly. Reopen interactive login."
         ) from exc
 
-    async def _reset_browser_locked(self) -> None:
+    async def _reset_browser(self) -> None:
+        async with self._browser_init_lock:
+            await self._reset_browser_resources()
+
+    async def _reset_browser_resources(self) -> None:
         for session in list(self._sessions.values()):
-            self._discard_session(session)
+            await self._discard_session(session)
             with suppress(Exception):
                 await session.context.close()
         if self._browser is not None:
@@ -993,6 +1063,7 @@ class DeferredChromeSession:
     process: asyncio.subprocess.Process
     created_at: datetime
     last_activity: datetime
+    capacity_lease: BrowserCapacityLease
     browser: Browser | None = None
     context: BrowserContext | None = None
     page: Page | None = None
@@ -1029,70 +1100,85 @@ class DeferredChromeBrowserSessionManager(BrowserSessionManager):
             if existing_id is not None:
                 await self._close_native_locked(existing_id, save_state=False)
 
-            if not self._native_executable.is_file():
-                raise BrowserStorageStateError(
-                    f"Configured Chrome executable was not found: {self._native_executable}"
-                )
-            session_id = str(uuid4())
-            profile_dir = (self._native_profile_root / session_id).resolve()
-            if self._native_profile_root not in profile_dir.parents:
-                raise BrowserStorageStateError("Unsafe native Chrome profile path.")
-            profile_dir.mkdir(parents=True, exist_ok=False)
-            cdp_port = self._available_loopback_port()
-            launch_arguments = [
-                str(self._native_executable),
-                f"--user-data-dir={profile_dir}",
-                f"--remote-debugging-port={cdp_port}",
-                "--remote-debugging-address=127.0.0.1",
-                "--no-first-run",
-                "--no-default-browser-check",
-            ]
-            if os.name != "nt":
-                # The NAS container runs Chromium as an unprivileged user on
-                # Xvfb.  It must be a normal X11 process during login: no
-                # Playwright launch(), headless mode or automation switches.
-                launch_arguments.extend(
-                    [
-                        "--no-sandbox",
-                        "--disable-dev-shm-usage",
-                        f"--window-size={VIEWPORT_WIDTH},{VIEWPORT_HEIGHT}",
-                        "--lang=zh-CN",
-                    ]
-                )
-            if self._proxy is not None:
-                launch_arguments.append(f"--proxy-server={self._proxy['server']}")
-                bypass = self._proxy.get("bypass")
-                if bypass:
-                    launch_arguments.append(
-                        f"--proxy-bypass-list={bypass.replace(',', ';')}"
-                    )
-            launch_arguments.append(login_url)
-            process = await asyncio.create_subprocess_exec(
-                *launch_arguments,
-                stdout=asyncio.subprocess.DEVNULL,
-                stderr=asyncio.subprocess.DEVNULL,
-            )
-            try:
-                await self._wait_for_debug_port(process, cdp_port)
-            except Exception:
-                await self._terminate_process(process)
-                await asyncio.to_thread(shutil.rmtree, profile_dir, True)
-                raise
+        lease = await self._capacity.acquire("interactive")
+        process: asyncio.subprocess.Process | None = None
+        profile_dir: Path | None = None
+        session_registered = False
+        try:
+            async with self._manager_lock:
+                if self._closing:
+                    raise BrowserStorageStateError("Browser session manager is closing.")
+                await self._cleanup_expired_native_locked()
+                existing_id = self._account_sessions.get(account_id)
+                if existing_id is not None:
+                    await self._close_native_locked(existing_id, save_state=False)
 
-            now = datetime.now(UTC)
-            session = DeferredChromeSession(
-                id=session_id,
-                account_id=account_id,
-                login_url=login_url,
-                profile_dir=profile_dir,
-                cdp_port=cdp_port,
-                process=process,
-                created_at=now,
-                last_activity=now,
-            )
-            self._native_sessions[session.id] = session
-            self._account_sessions[account_id] = session.id
-            return self._native_info(session)
+                if not self._native_executable.is_file():
+                    raise BrowserStorageStateError(
+                        "Configured Chrome executable was not found: "
+                        f"{self._native_executable}"
+                    )
+                session_id = str(uuid4())
+                profile_dir = (self._native_profile_root / session_id).resolve()
+                if self._native_profile_root not in profile_dir.parents:
+                    raise BrowserStorageStateError("Unsafe native Chrome profile path.")
+                profile_dir.mkdir(parents=True, exist_ok=False)
+                cdp_port = self._available_loopback_port()
+                launch_arguments = [
+                    str(self._native_executable),
+                    f"--user-data-dir={profile_dir}",
+                    f"--remote-debugging-port={cdp_port}",
+                    "--remote-debugging-address=127.0.0.1",
+                    "--no-first-run",
+                    "--no-default-browser-check",
+                ]
+                if os.name != "nt":
+                    launch_arguments.extend(
+                        [
+                            "--no-sandbox",
+                            "--disable-dev-shm-usage",
+                            f"--window-size={VIEWPORT_WIDTH},{VIEWPORT_HEIGHT}",
+                            "--lang=zh-CN",
+                        ]
+                    )
+                if self._proxy is not None:
+                    launch_arguments.append(f"--proxy-server={self._proxy['server']}")
+                    bypass = self._proxy.get("bypass")
+                    if bypass:
+                        launch_arguments.append(
+                            f"--proxy-bypass-list={bypass.replace(',', ';')}"
+                        )
+                launch_arguments.append(login_url)
+                process = await asyncio.create_subprocess_exec(
+                    *launch_arguments,
+                    stdout=asyncio.subprocess.DEVNULL,
+                    stderr=asyncio.subprocess.DEVNULL,
+                )
+                await self._wait_for_debug_port(process, cdp_port)
+
+                now = datetime.now(UTC)
+                session = DeferredChromeSession(
+                    id=session_id,
+                    account_id=account_id,
+                    login_url=login_url,
+                    profile_dir=profile_dir,
+                    cdp_port=cdp_port,
+                    process=process,
+                    created_at=now,
+                    last_activity=now,
+                    capacity_lease=lease,
+                )
+                self._native_sessions[session.id] = session
+                self._account_sessions[account_id] = session.id
+                session_registered = True
+                return self._native_info(session)
+        finally:
+            if not session_registered:
+                if process is not None:
+                    await self._terminate_process(process)
+                if profile_dir is not None:
+                    await asyncio.to_thread(shutil.rmtree, profile_dir, True)
+                await lease.release()
 
     async def get_info(self, session_id: str) -> BrowserSessionInfo:
         session = await self._get_native(session_id)
@@ -1145,6 +1231,8 @@ class DeferredChromeBrowserSessionManager(BrowserSessionManager):
         return count
 
     async def close_all(self) -> None:
+        self._closing = True
+        await self._capacity.begin_close()
         async with self._manager_lock:
             for session_id in list(self._native_sessions):
                 await self._close_native_locked(session_id, save_state=False)
@@ -1155,7 +1243,7 @@ class DeferredChromeBrowserSessionManager(BrowserSessionManager):
         if session is None:
             raise BrowserSessionNotFoundError(f"Unknown browser session: {session_id}")
         if session.process.returncode is not None:
-            self._discard_native(session)
+            await self._discard_native(session)
             await asyncio.to_thread(shutil.rmtree, session.profile_dir, True)
             raise BrowserSessionNotFoundError(
                 "Chrome login window was closed. Reopen interactive login."
@@ -1228,6 +1316,7 @@ class DeferredChromeBrowserSessionManager(BrowserSessionManager):
                     )
             finally:
                 await self._shutdown_native(session)
+                await session.capacity_lease.release()
         return state_json
 
     async def _cleanup_expired_native_locked(self) -> int:
@@ -1246,10 +1335,11 @@ class DeferredChromeBrowserSessionManager(BrowserSessionManager):
         await self._terminate_process(session.process)
         await asyncio.to_thread(shutil.rmtree, session.profile_dir, True)
 
-    def _discard_native(self, session: DeferredChromeSession) -> None:
+    async def _discard_native(self, session: DeferredChromeSession) -> None:
         self._native_sessions.pop(session.id, None)
         if self._account_sessions.get(session.account_id) == session.id:
             self._account_sessions.pop(session.account_id, None)
+        await session.capacity_lease.release()
 
     @staticmethod
     def _native_info(session: DeferredChromeSession) -> BrowserSessionInfo:
@@ -1329,6 +1419,10 @@ class BrowserSessionCleanupCoordinator:
     def start(self) -> None:
         if self._task is None:
             self._task = asyncio.create_task(self._run_loop())
+
+    @property
+    def running(self) -> bool:
+        return self._task is not None and not self._task.done()
 
     async def stop(self) -> None:
         if self._task is not None:

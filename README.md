@@ -149,6 +149,8 @@ Docker 中的 Chromium 运行在虚拟显示环境。交互登录期间 Chromium
 | `AUTOSIGN_BROWSER_NATIVE_EXECUTABLE` | 无 | 普通浏览器延迟接管入口；官方 Docker 示例指向镜像内固定 Chromium 启动器 |
 | `AUTOSIGN_BROWSER_SESSION_TIMEOUT_SECONDS` | `900` | 交互登录会话最大闲置秒数 |
 | `AUTOSIGN_BROWSER_SESSION_CLEANUP_POLL_SECONDS` | `60` | 后台清理过期交互会话的轮询秒数 |
+| `AUTOSIGN_BROWSER_AUTOMATION_CAPACITY` | `2` | 同时执行的浏览器自动化操作上限；NAS 内存压力较高时可降为 `1` |
+| `AUTOSIGN_BROWSER_INTERACTIVE_CAPACITY` | `1` | 独立预留的交互登录会话上限，不与自动签到共享配额 |
 | `AUTOSIGN_BROWSER_PROXY_SERVER` | 无 | 可选浏览器 HTTP/SOCKS 代理；同时用于延迟接管登录与自动签到，可能包含凭据，不要提交 |
 | `AUTOSIGN_BROWSER_PROXY_BYPASS` | 无 | 逗号分隔的代理绕过域名 |
 | `AUTOSIGN_SCHEDULER_POLL_SECONDS` | `15` | 调度器轮询间隔 |
@@ -178,6 +180,8 @@ Docker 中的 Chromium 运行在虚拟显示环境。交互登录期间 Chromium
 公开 Dockerfile 使用带 digest 的 Python 基础镜像，并从 `requirements.docker.lock` 安装精确版本。更新基础镜像、Playwright 或锁文件时应作为明确版本变更执行完整测试；Playwright 的固定版本同时固定其下载的 Chromium revision。
 
 目标网站的可达性取决于部署网络。可使用 `AUTOSIGN_BROWSER_PROXY_SERVER` 与 `AUTOSIGN_BROWSER_PROXY_BYPASS` 做通用浏览器分流，但 AutoSign 不内置任何私人代理节点、固定 IP 或区域绕过配置。
+
+如果目标页面已经显示但按钮长期无响应，先在浏览器开发者工具的 Network 面板分别检查主文档、同源 JavaScript/CSS 和第三方统计资源。单独的统计脚本失败通常不足以解释站点功能异常；主文档或同源大资源出现长时间 Pending、吞吐抖动时，应在同一部署网络中对直连与代理路线做无凭据对照。不要把临时验证过的 CDN IP 当作长期配置：边缘路由质量可能变化，固定地址也会绕过后续 DNS 与代理策略。调整分流后，应依次确认主文档无安全验证循环、普通交互浏览器可操作，以及保存状态后的插件执行仍通过。
 
 ## 通知渠道
 

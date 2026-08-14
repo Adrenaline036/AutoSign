@@ -1,4 +1,5 @@
 import json
+import tomllib
 from contextlib import asynccontextmanager
 from pathlib import Path
 from unittest.mock import AsyncMock
@@ -6,6 +7,7 @@ from unittest.mock import AsyncMock
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
+from autosign import __version__
 from autosign.core import backup
 from autosign.core.browser_sessions import (
     BROWSER_STATE_SECRET,
@@ -94,6 +96,7 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
         dashboard = client.get("/")
         health = client.get("/healthz")
         plugins = client.get("/api/v1/plugins")
+        system_status = client.get("/api/v1/system/status")
         execution = client.post(
             "/api/v1/plugins/demo/execute",
             json={"account_id": "a1", "account_label": "Test", "settings": {"reward": 5}},
@@ -125,6 +128,8 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert 'id="backup-summary"' in dashboard.text
     assert 'id="backup-run"' in dashboard.text
     assert 'id="backup-settings-dialog"' in dashboard.text
+    assert 'id="system-status"' in dashboard.text
+    assert "/api/v1/system/status" in dashboard.text
     assert 'id="backup-refresh"' not in dashboard.text
     assert "账户现已持久化到 SQLite" not in dashboard.text
     assert "可使用 Demo 验证流程" not in dashboard.text
@@ -162,6 +167,13 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert "window.confirm(" not in dashboard.text
     assert health.status_code == 200
     assert health.json()["status"] == "ok"
+    assert system_status.status_code == 200
+    assert system_status.json()["browser_capacity"] == {
+        "automation": {"limit": 2, "active": 0, "waiting": 0},
+        "interactive": {"limit": 1, "active": 0, "waiting": 0},
+        "closing": False,
+    }
+    assert "account" not in json.dumps(system_status.json()).lower()
     assert plugins.status_code == 200
     assert {plugin["id"] for plugin in plugins.json()} == {
         "demo",
@@ -173,6 +185,14 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert execution.status_code == 200
     assert execution.json()["verified"] is True
     assert execution.json()["details"]["reward"] == 5
+
+
+def test_source_and_health_versions_are_consistent(tmp_path: Path) -> None:
+    project = tomllib.loads(Path("pyproject.toml").read_text(encoding="utf-8"))
+    with TestClient(create_app(settings_for_test(tmp_path))) as client:
+        health_version = client.get("/healthz").json()["version"]
+
+    assert project["project"]["version"] == __version__ == health_version
 
 
 def test_local_preview_remote_browser_is_a_separate_interactive_page() -> None:

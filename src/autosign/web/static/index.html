@@ -146,6 +146,11 @@
         border-radius: 12px; background: #0b1627; }
       .backup-value { margin-top: 5px; color: #dbe7f7; overflow-wrap: anywhere; }
       .backup-error { color: #ffabb5; }
+      .system-status-details summary { cursor: pointer; color: #dbe7f7; font-weight: 700; }
+      .system-status-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
+        gap: 10px; margin-top: 16px; }
+      .system-status-item { padding: 12px 14px; border: 1px solid #263957;
+        border-radius: 12px; background: #0b1627; }
       .backup-settings-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr));
         gap: 16px; }
       .backup-settings-grid label:last-child { grid-column: 1 / -1; }
@@ -201,6 +206,7 @@
         input, select { min-width: 100%; }
         .row > * { width: 100%; }
         .backup-summary-row.primary, .backup-settings-grid { grid-template-columns: 1fr; }
+        .system-status-grid { grid-template-columns: 1fr; }
         .backup-settings-grid label:last-child { grid-column: auto; }
       }
     </style>
@@ -276,6 +282,17 @@
           </div>
         </div>
         <div id="backup-summary" class="backup-summary"></div>
+      </section>
+
+      <section class="panel">
+        <details class="system-status-details">
+          <summary>系统运行状态</summary>
+          <div class="section-heading">
+            <p class="muted">显示容量、排队和后台协调器状态，不包含账户或秘密信息。</p>
+            <button id="system-status-refresh" class="secondary" type="button">刷新状态</button>
+          </div>
+          <div id="system-status" class="system-status-grid"></div>
+        </details>
       </section>
     </main>
     <aside id="notice" role="status" aria-live="polite"></aside>
@@ -636,6 +653,7 @@
         schedules: [],
         notificationChannels: [],
         backupStatus: null,
+        systemStatus: null,
         seenExecutionIds: new Set(),
         historyMode: "initial"
       };
@@ -647,6 +665,7 @@
       const historyContainer = document.querySelector("#execution-history");
       const backupBadges = document.querySelector("#backup-badges");
       const backupSummary = document.querySelector("#backup-summary");
+      const systemStatusContainer = document.querySelector("#system-status");
       const backupSettingsDialog = document.querySelector("#backup-settings-dialog");
       const backupSettingsForm = document.querySelector("#backup-settings-form");
       const executionDetailDialog = document.querySelector("#execution-detail-dialog");
@@ -1280,6 +1299,31 @@
         renderBackupStatus();
       }
 
+      function renderSystemStatus() {
+        const status = state.systemStatus;
+        if (!status) return;
+        const automation = status.browser_capacity.automation;
+        const interactive = status.browser_capacity.interactive;
+        const items = [
+          ["版本与运行时间", `${status.version} · ${status.uptime_seconds} 秒`],
+          ["自动化容量", `${automation.active}/${automation.limit} 活跃 · ${automation.waiting} 等待`],
+          ["交互容量", `${interactive.active}/${interactive.limit} 活跃 · ${interactive.waiting} 等待`],
+          ["调度器", `${status.scheduler.running ? "运行中" : "已停止"} · ${status.scheduler.active_jobs} 个任务`],
+          ["浏览器清理器", status.coordinators.browser_cleanup_running ? "运行中" : "已停止"],
+          ["备份协调器", status.coordinators.backup_running ? "运行中" : "已停止"]
+        ];
+        systemStatusContainer.replaceChildren(...items.map(([label, value]) => {
+          const item = element("div", "system-status-item");
+          item.append(element("div", "meta", label), element("div", "backup-value", value));
+          return item;
+        }));
+      }
+
+      async function loadSystemStatus() {
+        state.systemStatus = await api("/api/v1/system/status");
+        renderSystemStatus();
+      }
+
       function openBackupSettings() {
         const status = state.backupStatus;
         document.querySelector("#backup-settings-enabled").checked = status.enabled;
@@ -1817,6 +1861,21 @@
           button.disabled = !state.backupStatus?.configured || !state.backupStatus?.latest_backup_name;
         }
       });
+
+      document.querySelector("#system-status-refresh").addEventListener(
+        "click",
+        async (event) => {
+          const button = event.currentTarget;
+          button.disabled = true;
+          try {
+            await loadSystemStatus();
+          } catch (error) {
+            showNotice(error.message, true);
+          } finally {
+            button.disabled = false;
+          }
+        }
+      );
       document.querySelector("#execution-detail-close").addEventListener(
         "click", () => executionDetailDialog.close()
       );
@@ -1858,12 +1917,14 @@
             api("/api/v1/executions?limit=6"),
             api("/api/v1/schedules"),
             api("/api/v1/notification-channels"),
-            api("/api/v1/backups/status")
+            api("/api/v1/backups/status"),
+            api("/api/v1/system/status")
           ]);
         })
         .then((result) => {
           if (!result) return;
-          const [plugins, accounts, executions, schedules, notificationChannels, backupStatus] = result;
+          const [plugins, accounts, executions, schedules, notificationChannels,
+            backupStatus, systemStatus] = result;
           state.plugins = plugins;
           state.accounts = accounts;
           state.executions = executions;
@@ -1871,10 +1932,12 @@
           state.schedules = schedules;
           state.notificationChannels = notificationChannels;
           state.backupStatus = backupStatus;
+          state.systemStatus = systemStatus;
           renderPlugins();
           renderAccounts();
           renderNotificationChannels();
           renderBackupStatus();
+          renderSystemStatus();
           renderExecutions();
         })
         .catch((error) => showNotice(error.message, true));
