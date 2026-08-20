@@ -1176,18 +1176,22 @@ async def test_explicit_browser_activity_refreshes_idle_deadline() -> None:
 
 @pytest.mark.asyncio
 async def test_browser_cleanup_coordinator_runs_and_stops() -> None:
+    second_call = asyncio.Event()
+
     class CleanupManager:
         def __init__(self) -> None:
             self.calls = 0
 
         async def cleanup_expired(self) -> int:
             self.calls += 1
+            if self.calls >= 2:
+                second_call.set()
             return 1 if self.calls == 1 else 0
 
     manager = CleanupManager()
     coordinator = BrowserSessionCleanupCoordinator(manager, poll_seconds=0.01)  # type: ignore[arg-type]
     coordinator.start()
-    await asyncio.sleep(0.025)
+    await asyncio.wait_for(second_call.wait(), timeout=1)
     await coordinator.stop()
 
     assert manager.calls >= 2
