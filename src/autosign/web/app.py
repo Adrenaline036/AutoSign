@@ -4,8 +4,8 @@ from contextlib import asynccontextmanager
 from datetime import UTC, datetime
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException, Request
-from fastapi.responses import FileResponse, JSONResponse, Response
+from fastapi import FastAPI, Request
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 from autosign import __version__
@@ -13,7 +13,6 @@ from autosign.core.account_operations import AccountOperationGate
 from autosign.core.auth import (
     SESSION_COOKIE_NAME,
     AdminAuthService,
-    AuthConfigurationError,
 )
 from autosign.core.browser_sessions import (
     BROWSER_STATE_SECRET,
@@ -39,13 +38,12 @@ from autosign.core.services.backups import BackupCoordinator, BackupService
 from autosign.plugin_sdk import PluginCapability, PluginManifest, SignResult
 from autosign.web.features.vikacg_recovery import create_vikacg_recovery_router
 from autosign.web.routers.accounts import create_accounts_router
+from autosign.web.routers.auth import create_auth_router
 from autosign.web.routers.backups import create_backups_router
 from autosign.web.routers.browser import create_browser_router
 from autosign.web.routers.executions import create_executions_router
 from autosign.web.routers.notifications import create_notifications_router
 from autosign.web.schemas import (
-    AdminPasswordRequest,
-    AuthStatus,
     BrowserCapacityRead,
     CapacityPoolRead,
     CoordinatorStatusRead,
@@ -330,6 +328,13 @@ def create_app(
             screenshot_interaction_enabled=screenshot_interaction_enabled,
         )
     )
+    app.include_router(
+        create_auth_router(
+            settings=settings,
+            auth=auth,
+            login_limiter=login_limiter,
+        )
+    )
 
     def authenticated_payload(request: Request) -> dict[str, object] | None:
         if settings.auth_disabled:
@@ -381,81 +386,6 @@ def create_app(
     @app.get("/demo-login", include_in_schema=False)
     async def demo_login() -> FileResponse:
         return FileResponse(STATIC_DIR / "demo_login.html")
-
-    def set_auth_cookie(response: Response, token: str) -> None:
-        response.set_cookie(
-            SESSION_COOKIE_NAME,
-            token,
-            max_age=settings.auth_session_hours * 3600,
-            httponly=True,
-            secure=settings.auth_secure_cookie,
-            samesite="strict",
-            path="/",
-        )
-
-    @app.get("/api/v1/auth/status", response_model=AuthStatus)
-    async def auth_status(request: Request, response: Response) -> AuthStatus:
-        response.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
-        response.headers["Pragma"] = "no-cache"
-        response.headers["Vary"] = "Cookie"
-        payload = request.state.auth_payload
-        return AuthStatus(
-            configured=settings.auth_disabled or auth.is_configured(),
-            authenticated=payload is not None,
-            csrf_token=str(payload["csrf"]) if payload is not None else None,
-        )
-
-    @app.post("/api/v1/auth/setup", response_model=AuthStatus)
-    async def setup_admin(
-        request_data: AdminPasswordRequest,
-        response: Response,
-    ) -> AuthStatus:
-        if settings.auth_disabled:
-            raise HTTPException(status_code=409, detail="Authentication is disabled.")
-        try:
-            auth.setup(request_data.password.get_secret_value())
-        except AuthConfigurationError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        session = auth.issue_session()
-        set_auth_cookie(response, session.token)
-        return AuthStatus(
-            configured=True,
-            authenticated=True,
-            csrf_token=session.csrf_token,
-        )
-
-    @app.post("/api/v1/auth/login", response_model=AuthStatus)
-    async def login_admin(
-        request: Request,
-        request_data: AdminPasswordRequest,
-        response: Response,
-    ) -> AuthStatus:
-        if not auth.is_configured():
-            raise HTTPException(status_code=409, detail="Administrator password is not configured.")
-        # Deliberately use the direct peer address. X-Forwarded-For is untrusted
-        # until AutoSign has an explicit trusted-proxy configuration contract.
-        client_key = request.client.host if request.client else "unknown"
-        if login_limiter.is_limited(client_key):
-            raise HTTPException(
-                status_code=429,
-                detail="Too many failed login attempts. Try again in one minute.",
-            )
-        if not auth.verify_password(request_data.password.get_secret_value()):
-            login_limiter.record_failure(client_key)
-            raise HTTPException(status_code=401, detail="Administrator password is incorrect.")
-        login_limiter.clear(client_key)
-        session = auth.issue_session()
-        set_auth_cookie(response, session.token)
-        return AuthStatus(
-            configured=True,
-            authenticated=True,
-            csrf_token=session.csrf_token,
-        )
-
-    @app.post("/api/v1/auth/logout", response_model=AuthStatus)
-    async def logout_admin(response: Response) -> AuthStatus:
-        response.delete_cookie(SESSION_COOKIE_NAME, path="/")
-        return AuthStatus(configured=True, authenticated=False)
 
     @app.get("/healthz")
     async def health() -> dict[str, str]:

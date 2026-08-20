@@ -119,6 +119,7 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
             json={},
         )
         assert logout.status_code == 200
+        assert "Path=/" in logout.headers["set-cookie"]
         assert client.get("/api/v1/accounts").status_code == 401
 
         wrong = client.post(
@@ -141,6 +142,52 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
     assert stored_hash.startswith("scrypt-v1$")
     assert ADMIN_PASSWORD not in stored_hash
     assert ADMIN_PASSWORD.encode("utf-8") not in (tmp_path / "autosign.db").read_bytes()
+
+
+def test_auth_router_preserves_cookie_and_direct_peer_limits(tmp_path: Path) -> None:
+    settings = auth_settings(tmp_path / "secured")
+    settings.auth_secure_cookie = True
+
+    with TestClient(create_app(settings)) as client:
+        not_configured = client.post(
+            "/api/v1/auth/login",
+            json={"password": ADMIN_PASSWORD},
+        )
+        assert not_configured.status_code == 409
+
+        setup = client.post(
+            "/api/v1/auth/setup",
+            json={"password": ADMIN_PASSWORD},
+        )
+        cookie = setup.headers["set-cookie"]
+        assert "Max-Age=43200" in cookie
+        assert "HttpOnly" in cookie
+        assert "Path=/" in cookie
+        assert "SameSite=strict" in cookie
+        assert "Secure" in cookie
+
+        for attempt in range(5):
+            wrong = client.post(
+                "/api/v1/auth/login",
+                headers={"X-Forwarded-For": f"198.51.100.{attempt + 1}"},
+                json={"password": "this password is wrong"},
+            )
+            assert wrong.status_code == 401
+        limited = client.post(
+            "/api/v1/auth/login",
+            headers={"X-Forwarded-For": "203.0.113.200"},
+            json={"password": ADMIN_PASSWORD},
+        )
+        assert limited.status_code == 429
+
+    disabled_settings = auth_settings(tmp_path / "disabled")
+    disabled_settings.auth_disabled = True
+    with TestClient(create_app(disabled_settings)) as client:
+        disabled_setup = client.post(
+            "/api/v1/auth/setup",
+            json={"password": ADMIN_PASSWORD},
+        )
+        assert disabled_setup.status_code == 409
 
 
 def test_setup_cannot_replace_existing_password(tmp_path: Path) -> None:
