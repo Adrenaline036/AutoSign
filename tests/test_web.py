@@ -98,6 +98,7 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     with TestClient(create_app(settings_for_test(tmp_path))) as client:
         dashboard = client.get("/")
         accounts_script = client.get("/assets/accounts.js")
+        history_script = client.get("/assets/history.js")
         vikacg_recovery_script = client.get("/assets/vikacg-recovery.js")
         health = client.get("/healthz")
         plugins = client.get("/api/v1/plugins")
@@ -116,12 +117,19 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert 'id="vikacg-import-value" class="secret-json-input" maxlength="65536"' in dashboard.text
     assert 'type="password" autocomplete="off"' in dashboard.text
     assert '<script src="/assets/accounts.js"></script>' in dashboard.text
+    assert '<script src="/assets/history.js"></script>' in dashboard.text
     assert '<script src="/assets/vikacg-recovery.js"></script>' in dashboard.text
     assert "window.createAccountsUi" in accounts_script.text
+    assert "window.createHistoryUi" in history_script.text
+    assert 'api("/api/v1/executions?limit=6")' in history_script.text
+    assert "loadExecutions: historyUi.load" in dashboard.text
+    assert "historyUi.render()" in dashboard.text
     assert "openVikacgRecovery(account)" in accounts_script.text
     assert "openVikacgRecovery: vikacgRecovery.open" in dashboard.text
     assert accounts_script.status_code == 200
     assert accounts_script.headers["cache-control"] == "no-store"
+    assert history_script.status_code == 200
+    assert history_script.headers["cache-control"] == "no-store"
     assert vikacg_recovery_script.status_code == 200
     assert vikacg_recovery_script.headers["cache-control"] == "no-store"
     assert "window.createVikacgRecovery" in vikacg_recovery_script.text

@@ -639,6 +639,7 @@
     </dialog>
 
     <script src="/assets/accounts.js"></script>
+    <script src="/assets/history.js"></script>
     <script src="/assets/vikacg-recovery.js"></script>
     <script>
       const state = {
@@ -654,16 +655,11 @@
       const pluginSelect = document.querySelector("#plugin-select");
       const channelContainer = document.querySelector("#notification-channels");
       const notice = document.querySelector("#notice");
-      const historyContainer = document.querySelector("#execution-history");
       const backupBadges = document.querySelector("#backup-badges");
       const backupSummary = document.querySelector("#backup-summary");
       const systemStatusContainer = document.querySelector("#system-status");
       const backupSettingsDialog = document.querySelector("#backup-settings-dialog");
       const backupSettingsForm = document.querySelector("#backup-settings-form");
-      const executionDetailDialog = document.querySelector("#execution-detail-dialog");
-      const executionDetailSummary = document.querySelector("#execution-detail-summary");
-      const executionDetailMessage = document.querySelector("#execution-detail-message");
-      const executionDetailJson = document.querySelector("#execution-detail-json");
       const forceBrowserSaveDialog = document.querySelector("#force-browser-save-dialog");
       const scheduleDialog = document.querySelector("#schedule-dialog");
       const scheduleForm = document.querySelector("#schedule-form");
@@ -747,12 +743,14 @@
         showNotice
       });
 
+      const historyUi = window.createHistoryUi({api, element, showNotice, state});
+
       const accountsUi = window.createAccountsUi({
         api,
         element,
         icons: ICONS,
         loadAccounts,
-        loadExecutions,
+        loadExecutions: historyUi.load,
         openBrowserLogin,
         openChannelAssignment,
         openScheduleDialog,
@@ -1195,61 +1193,6 @@
         renderNotificationChannels();
       }
 
-      function executionStatusText(status) {
-        return {
-          success: "成功",
-          already_signed: "今日已签到",
-          failed: "失败",
-          interaction_required: "需要登录"
-        }[status] || status;
-      }
-
-      function openExecutionDetail(record) {
-        executionDetailSummary.textContent =
-          `${record.account_label} · ${record.plugin_id} · ${executionStatusText(record.status)}`;
-        executionDetailMessage.textContent = record.message;
-        executionDetailJson.textContent = JSON.stringify({
-          执行时间: new Date(record.started_at).toLocaleString("zh-CN", {hour12: false}),
-          验证通过: record.verified,
-          耗时毫秒: record.duration_ms,
-          详细结果: record.details
-        }, null, 2);
-        executionDetailDialog.showModal();
-      }
-
-      function renderExecutions() {
-        if (!state.executions.length) {
-          historyContainer.replaceChildren(
-            element("p", "muted", "还没有签到记录。点击账户卡片中的“执行账户签到”开始测试。")
-          );
-          return;
-        }
-        historyContainer.replaceChildren(...state.executions.map((record) => {
-          const item = element("article", "history-item");
-          const identity = element("div");
-          identity.append(
-            element("strong", "", record.account_label),
-            element("div", "meta",
-              new Date(record.started_at).toLocaleString("zh-CN", {hour12: false}))
-          );
-          const status = element(
-            "span",
-            `badge ${record.status}`,
-            executionStatusText(record.status)
-          );
-          const message = element("div", "history-message", record.message);
-          const detail = element("button", "secondary", "详情");
-          detail.addEventListener("click", () => openExecutionDetail(record));
-          item.append(identity, status, message, detail);
-          return item;
-        }));
-      }
-
-      async function loadExecutions() {
-        state.executions = await api("/api/v1/executions?limit=6");
-        renderExecutions();
-      }
-
       document.querySelector("#schedule-dialog-close").addEventListener(
         "click", () => scheduleDialog.close()
       );
@@ -1460,12 +1403,6 @@
         } catch (error) { showNotice(error.message, true); }
       });
 
-      document.querySelector("#history-refresh").addEventListener("click", async () => {
-        try {
-          await loadExecutions();
-          showNotice("已刷新最近签到记录");
-        } catch (error) { showNotice(error.message, true); }
-      });
       document.querySelector("#backup-settings").addEventListener("click", openBackupSettings);
       document.querySelector("#backup-settings-close").addEventListener(
         "click", () => backupSettingsDialog.close()
@@ -1548,16 +1485,6 @@
           }
         }
       );
-      document.querySelector("#execution-detail-close").addEventListener(
-        "click", () => executionDetailDialog.close()
-      );
-      document.querySelector("#execution-detail-done").addEventListener(
-        "click", () => executionDetailDialog.close()
-      );
-      executionDetailDialog.addEventListener("cancel", (event) => {
-        event.preventDefault();
-        executionDetailDialog.close();
-      });
       function closeForceBrowserSaveDialog() {
         forceBrowserSaveDialog.close();
       }
@@ -1609,7 +1536,7 @@
           renderNotificationChannels();
           renderBackupStatus();
           renderSystemStatus();
-          renderExecutions();
+          historyUi.render();
         })
         .catch((error) => showNotice(error.message, true));
     </script>

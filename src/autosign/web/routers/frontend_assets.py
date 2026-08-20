@@ -17,4 +17,12 @@ def create_frontend_assets_router() -> APIRouter:
             headers={"Cache-Control": "no-store"},
         )
 
+    @router.get("/assets/history.js", include_in_schema=False)
+    async def history_script() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "history.js",
+            media_type="text/javascript",
+            headers={"Cache-Control": "no-store"},
+        )
+
     return router
