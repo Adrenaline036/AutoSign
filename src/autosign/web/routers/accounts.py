@@ -20,6 +20,7 @@ from autosign.core.services import (
 from autosign.core.services.accounts import AccountNotFoundError
 from autosign.core.services.notifications import NAPCAT, UPTIME_KUMA
 from autosign.plugin_sdk import SignResult
+from autosign.web.errors import account_error
 from autosign.web.schemas import (
     AccountCreate,
     AccountDelete,
@@ -62,11 +63,6 @@ def create_accounts_router(
             created_at=aware_utc(account.created_at),
             updated_at=aware_utc(account.updated_at),
         )
-
-    def account_error(exc: Exception) -> HTTPException:
-        if isinstance(exc, AccountNotFoundError):
-            return HTTPException(status_code=404, detail=str(exc))
-        return HTTPException(status_code=400, detail=str(exc))
 
     def serialize_schedule(schedule) -> ScheduleRead:
         return ScheduleRead(

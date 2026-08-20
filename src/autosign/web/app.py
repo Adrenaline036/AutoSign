@@ -44,6 +44,7 @@ from autosign.core.services import (
 from autosign.core.services.accounts import AccountNotFoundError
 from autosign.core.services.backups import BackupCoordinator, BackupService
 from autosign.plugin_sdk import PluginCapability, PluginManifest, SignResult
+from autosign.web.errors import account_error
 from autosign.web.features.vikacg_recovery import create_vikacg_recovery_router
 from autosign.web.routers.accounts import create_accounts_router
 from autosign.web.routers.backups import create_backups_router
@@ -367,11 +368,6 @@ def create_app(
                 content={"detail": "Invalid or missing CSRF token."},
             )
         return await call_next(request)
-
-    def account_error(exc: Exception) -> HTTPException:
-        if isinstance(exc, AccountNotFoundError):
-            return HTTPException(status_code=404, detail=str(exc))
-        return HTTPException(status_code=400, detail=str(exc))
 
     @app.get("/", include_in_schema=False)
     async def dashboard(request: Request) -> FileResponse:
