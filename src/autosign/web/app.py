@@ -54,6 +54,7 @@ from autosign.core.services.notifications import (
 )
 from autosign.plugin_sdk import PluginCapability, PluginManifest, SignResult
 from autosign.web.features.vikacg_recovery import create_vikacg_recovery_router
+from autosign.web.routers.executions import create_executions_router
 from autosign.web.schemas import (
     AccountCreate,
     AccountDelete,
@@ -73,7 +74,6 @@ from autosign.web.schemas import (
     BrowserTextInput,
     CapacityPoolRead,
     CoordinatorStatusRead,
-    ExecutionRead,
     NotificationChannelAssignmentWrite,
     NotificationChannelDeliveryRead,
     NotificationChannelRead,
@@ -85,6 +85,7 @@ from autosign.web.schemas import (
     SecretWrite,
     SystemStatusRead,
 )
+from autosign.web.serialization import aware_utc
 
 STATIC_DIR = Path(__file__).with_name("static")
 
@@ -337,6 +338,7 @@ def create_app(
             browser_sessions=browser_sessions,
         )
     )
+    app.include_router(create_executions_router(executions=executions))
 
     def authenticated_payload(request: Request) -> dict[str, object] | None:
         if settings.auth_disabled:
@@ -400,11 +402,6 @@ def create_app(
         if isinstance(exc, NotificationChannelNotFoundError):
             return HTTPException(status_code=404, detail="Unknown notification channel.")
         return account_error(exc)
-
-    def aware_utc(value: datetime | None) -> datetime | None:
-        if value is None or value.tzinfo is not None:
-            return value
-        return value.replace(tzinfo=UTC)
 
     def serialize_notification_channel(channel) -> NotificationChannelRead:
         return NotificationChannelRead(
@@ -1166,27 +1163,5 @@ def create_app(
             NotificationChannelNotFoundError,
         ) as exc:
             raise notification_error(exc) from exc
-
-    @app.get("/api/v1/executions", response_model=list[ExecutionRead])
-    async def list_executions(
-        account_id: str | None = None,
-        limit: int = Query(default=50, ge=1, le=200),
-    ) -> list[ExecutionRead]:
-        return [
-            ExecutionRead(
-                id=record.id,
-                account_id=record.account_id,
-                account_label=record.account_label,
-                plugin_id=record.plugin_id,
-                status=record.status,
-                message=record.message,
-                verified=record.verified,
-                started_at=aware_utc(record.started_at),
-                finished_at=aware_utc(record.finished_at),
-                duration_ms=record.duration_ms,
-                details=record.details,
-            )
-            for record in executions.list(account_id=account_id, limit=limit)
-        ]
 
     return app

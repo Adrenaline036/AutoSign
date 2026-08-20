@@ -36,6 +36,7 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
         assert first_status.headers["vary"] == "Cookie"
         assert client.get("/api/v1/accounts").status_code == 401
         assert client.get("/api/v1/system/status").status_code == 401
+        assert client.get("/api/v1/executions").status_code == 401
         assert client.get("/assets/vikacg-recovery.js").status_code == 401
 
         setup = client.post(

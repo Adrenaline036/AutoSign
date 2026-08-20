@@ -474,6 +474,37 @@ def test_account_crud(tmp_path: Path) -> None:
         assert client.get("/api/v1/executions").json() == []
 
 
+def test_execution_history_filters_and_validates_limit(tmp_path: Path) -> None:
+    with TestClient(create_app(settings_for_test(tmp_path))) as client:
+        first_id = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "First Demo"},
+        ).json()["id"]
+        second_id = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "Second Demo"},
+        ).json()["id"]
+
+        assert client.post(f"/api/v1/accounts/{first_id}/execute").status_code == 200
+        assert client.post(f"/api/v1/accounts/{first_id}/execute").status_code == 200
+        assert client.post(f"/api/v1/accounts/{second_id}/execute").status_code == 200
+
+        first_page = client.get(
+            "/api/v1/executions",
+            params={"account_id": first_id, "limit": 1},
+        )
+        assert first_page.status_code == 200
+        assert len(first_page.json()) == 1
+        assert first_page.json()[0]["account_id"] == first_id
+        assert first_page.json()[0]["started_at"].endswith(("Z", "+00:00"))
+
+        full_page = client.get("/api/v1/executions", params={"limit": 200})
+        assert full_page.status_code == 200
+        assert len(full_page.json()) == 3
+        assert client.get("/api/v1/executions", params={"limit": 0}).status_code == 422
+        assert client.get("/api/v1/executions", params={"limit": 201}).status_code == 422
+
+
 def test_account_schedule_crud(tmp_path: Path) -> None:
     with TestClient(create_app(settings_for_test(tmp_path))) as client:
         account = client.post(
