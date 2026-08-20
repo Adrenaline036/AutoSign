@@ -42,6 +42,7 @@ from autosign.web.routers.auth import create_auth_router
 from autosign.web.routers.backups import create_backups_router
 from autosign.web.routers.browser import create_browser_router
 from autosign.web.routers.executions import create_executions_router
+from autosign.web.routers.frontend_assets import create_frontend_assets_router
 from autosign.web.routers.notifications import create_notifications_router
 from autosign.web.schemas import (
     BrowserCapacityRead,
@@ -304,6 +305,7 @@ def create_app(
     )
     app.include_router(create_backups_router(backups=backups))
     app.include_router(create_executions_router(executions=executions))
+    app.include_router(create_frontend_assets_router())
     app.include_router(create_notifications_router(notifications=notifications))
     app.include_router(
         create_accounts_router(

@@ -97,6 +97,7 @@ def settings_for_test(data_dir: Path, key: str | None = None) -> Settings:
 def test_health_and_plugin_execution(tmp_path: Path) -> None:
     with TestClient(create_app(settings_for_test(tmp_path))) as client:
         dashboard = client.get("/")
+        accounts_script = client.get("/assets/accounts.js")
         vikacg_recovery_script = client.get("/assets/vikacg-recovery.js")
         health = client.get("/healthz")
         plugins = client.get("/api/v1/plugins")
@@ -114,9 +115,13 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert '<dialog id="vikacg-recovery-dialog"' in dashboard.text
     assert 'id="vikacg-import-value" class="secret-json-input" maxlength="65536"' in dashboard.text
     assert 'type="password" autocomplete="off"' in dashboard.text
-    assert 'isVikacg ? "登录与恢复" : "交互登录"' in dashboard.text
+    assert '<script src="/assets/accounts.js"></script>' in dashboard.text
     assert '<script src="/assets/vikacg-recovery.js"></script>' in dashboard.text
-    assert "vikacgRecovery.open(account)" in dashboard.text
+    assert "window.createAccountsUi" in accounts_script.text
+    assert "openVikacgRecovery(account)" in accounts_script.text
+    assert "openVikacgRecovery: vikacgRecovery.open" in dashboard.text
+    assert accounts_script.status_code == 200
+    assert accounts_script.headers["cache-control"] == "no-store"
     assert vikacg_recovery_script.status_code == 200
     assert vikacg_recovery_script.headers["cache-control"] == "no-store"
     assert "window.createVikacgRecovery" in vikacg_recovery_script.text
@@ -138,11 +143,11 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert "seenExecutionIds" not in dashboard.text
     assert "historyMode" not in dashboard.text
     assert "loadNewExecutions" not in dashboard.text
-    assert 'badges.append(loginBadge(account.secret_names.includes("browser_storage_state")))' in (
-        dashboard.text
+    assert 'loginBadge(account.secret_names.includes("browser_storage_state"))' in (
+        accounts_script.text
     )
-    assert 'statusBadge("Uptime Kuma", account.monitor_configured)' in dashboard.text
-    assert 'statusBadge("QQ通知", account.napcat_configured)' in dashboard.text
+    assert 'statusBadge("Uptime Kuma", account.monitor_configured)' in accounts_script.text
+    assert 'statusBadge("QQ通知", account.napcat_configured)' in accounts_script.text
     assert 'id="notification-channels"' in dashboard.text
     assert 'id="backup-summary"' in dashboard.text
     assert 'id="backup-run"' in dashboard.text
