@@ -100,6 +100,7 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
         accounts_script = client.get("/assets/accounts.js")
         history_script = client.get("/assets/history.js")
         browser_script = client.get("/assets/browser.js")
+        notifications_script = client.get("/assets/notifications.js")
         vikacg_recovery_script = client.get("/assets/vikacg-recovery.js")
         health = client.get("/healthz")
         plugins = client.get("/api/v1/plugins")
@@ -120,10 +121,12 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert '<script src="/assets/accounts.js"></script>' in dashboard.text
     assert '<script src="/assets/history.js"></script>' in dashboard.text
     assert '<script src="/assets/browser.js"></script>' in dashboard.text
+    assert '<script src="/assets/notifications.js"></script>' in dashboard.text
     assert '<script src="/assets/vikacg-recovery.js"></script>' in dashboard.text
     assert "window.createAccountsUi" in accounts_script.text
     assert "window.createHistoryUi" in history_script.text
     assert "window.createBrowserUi" in browser_script.text
+    assert "window.createNotificationsUi" in notifications_script.text
     assert 'api("/api/v1/executions?limit=6")' in history_script.text
     assert "loadExecutions: historyUi.load" in dashboard.text
     assert "historyUi.render()" in dashboard.text
@@ -135,6 +138,18 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert history_script.headers["cache-control"] == "no-store"
     assert browser_script.status_code == 200
     assert browser_script.headers["cache-control"] == "no-store"
+    assert notifications_script.status_code == 200
+    assert notifications_script.headers["cache-control"] == "no-store"
+    assert "openChannelAssignment: notificationsUi.openAssignment" in dashboard.text
+    assert "notificationsUi.render()" in dashboard.text
+    assert notifications_script.text.count(
+        '{type: "uptime_kuma", title: "Uptime Kuma"}'
+    ) == 2
+    assert notifications_script.text.count('{type: "napcat", title: "NapCat QQ"}') == 2
+    assert "/notification-channels/${channel.id}/test`" in notifications_script.text
+    assert "/notification-channels`," in notifications_script.text
+    assert "return {openAssignment, render};" in notifications_script.text
+    assert "renderNotificationChannels" not in dashboard.text
     assert dashboard.text.count("openBrowserLogin: browserUi.open") == 2
     assert vikacg_recovery_script.status_code == 200
     assert vikacg_recovery_script.headers["cache-control"] == "no-store"
@@ -149,7 +164,7 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert 'class="browser-dialog"' in dashboard.text
     assert 'id="channel-assignment-list" class="channel-assignment-columns"' in dashboard.text
     assert '.channel-assignment-columns { display: grid;' in dashboard.text
-    assert 'element("section", "channel-assignment-column")' in dashboard.text
+    assert 'element("section", "channel-assignment-column")' in notifications_script.text
     assert '<dialog id="delete-channel-dialog"' in dashboard.text
     assert 'id="channel-create"' in dashboard.text
     assert 'id="demo-test"' not in dashboard.text

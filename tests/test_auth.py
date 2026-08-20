@@ -42,6 +42,7 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
         assert client.get("/assets/accounts.js").status_code == 401
         assert client.get("/assets/history.js").status_code == 401
         assert client.get("/assets/browser.js").status_code == 401
+        assert client.get("/assets/notifications.js").status_code == 401
         assert client.get("/assets/vikacg-recovery.js").status_code == 401
 
         setup = client.post(
