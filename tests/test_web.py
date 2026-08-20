@@ -409,8 +409,75 @@ def test_backup_status_and_manual_actions(tmp_path: Path, monkeypatch) -> None:
     assert updated.json()["retention_count"] == 9
     assert created.status_code == 200
     assert created.json()["status"]["latest_backup_name"].startswith("autosign-auto-")
+    backup_name = created.json()["status"]["latest_backup_name"]
+    assert created.json()["message"] == f"Encrypted backup created: {backup_name}"
+    assert (tmp_path / "backups" / backup_name).is_file()
     assert checked.status_code == 200
     assert checked.json()["success"] is True
+    assert checked.json()["message"] == f"Backup is valid: {backup_name}"
+
+
+def test_backup_routes_preserve_failure_mapping(tmp_path: Path) -> None:
+    with TestClient(create_app(settings_for_test(tmp_path))) as client:
+        status = client.get("/api/v1/backups/status")
+        run = client.post("/api/v1/backups/run", json={})
+        check = client.post("/api/v1/backups/check-latest", json={})
+        invalid_format = client.put(
+            "/api/v1/backups/settings",
+            json={
+                "enabled": False,
+                "daily_time": "25:00",
+                "timezone": "UTC",
+                "retention_count": 7,
+            },
+        )
+        invalid_timezone = client.put(
+            "/api/v1/backups/settings",
+            json={
+                "enabled": False,
+                "daily_time": "03:30",
+                "timezone": "Invalid/Timezone",
+                "retention_count": 7,
+            },
+        )
+        enable_without_password = client.put(
+            "/api/v1/backups/settings",
+            json={
+                "enabled": True,
+                "daily_time": "03:30",
+                "timezone": "UTC",
+                "retention_count": 7,
+            },
+        )
+
+    assert status.status_code == 200
+    assert status.json()["configured"] is False
+    assert run.status_code == 409
+    assert run.json()["detail"] == "Automatic backup password is not configured."
+    assert check.status_code == 409
+    assert check.json()["detail"] == "Automatic backup password is not configured."
+    assert invalid_format.status_code == 422
+    assert invalid_timezone.status_code == 400
+    assert invalid_timezone.json()["detail"] == (
+        "Unknown backup timezone: Invalid/Timezone"
+    )
+    assert enable_without_password.status_code == 400
+    assert enable_without_password.json()["detail"] == (
+        "Set a backup password before enabling automatic backup."
+    )
+    assert not (tmp_path / "backups").exists()
+
+
+def test_backup_check_latest_reports_missing_backup(tmp_path: Path) -> None:
+    settings = settings_for_test(tmp_path)
+    settings.backup_password = SecretStr("automatic backup password")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/api/v1/backups/check-latest", json={})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "No automatic backup is available yet."
+    assert not (tmp_path / "backups").exists()
 
 
 def test_direct_plugin_execution_endpoint_is_removed(tmp_path: Path) -> None:

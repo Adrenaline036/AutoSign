@@ -35,6 +35,7 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
         assert "no-store" in first_status.headers["cache-control"]
         assert first_status.headers["vary"] == "Cookie"
         assert client.get("/api/v1/accounts").status_code == 401
+        assert client.get("/api/v1/backups/status").status_code == 401
         assert client.get("/api/v1/system/status").status_code == 401
         assert client.get("/api/v1/executions").status_code == 401
         assert client.get("/assets/vikacg-recovery.js").status_code == 401
@@ -48,6 +49,9 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
         assert "HttpOnly" in setup.headers["set-cookie"]
         assert "SameSite=strict" in setup.headers["set-cookie"]
         csrf_token = setup.json()["csrf_token"]
+
+        backup_without_csrf = client.post("/api/v1/backups/run", json={})
+        assert backup_without_csrf.status_code == 403
 
         paste_without_csrf = client.post(
             "/api/v1/browser-sessions/unknown/type",

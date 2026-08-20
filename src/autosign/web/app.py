@@ -20,7 +20,6 @@ from autosign.core.auth import (
     AdminAuthService,
     AuthConfigurationError,
 )
-from autosign.core.backup import BackupError
 from autosign.core.browser_sessions import (
     BROWSER_STATE_SECRET,
     BrowserSessionCleanupCoordinator,
@@ -54,6 +53,7 @@ from autosign.core.services.notifications import (
 )
 from autosign.plugin_sdk import PluginCapability, PluginManifest, SignResult
 from autosign.web.features.vikacg_recovery import create_vikacg_recovery_router
+from autosign.web.routers.backups import create_backups_router
 from autosign.web.routers.executions import create_executions_router
 from autosign.web.schemas import (
     AccountCreate,
@@ -62,9 +62,6 @@ from autosign.web.schemas import (
     AccountUpdate,
     AdminPasswordRequest,
     AuthStatus,
-    BackupActionRead,
-    BackupSettingsWrite,
-    BackupStatusRead,
     BrowserCapacityRead,
     BrowserClick,
     BrowserKeyInput,
@@ -338,6 +335,7 @@ def create_app(
             browser_sessions=browser_sessions,
         )
     )
+    app.include_router(create_backups_router(backups=backups))
     app.include_router(create_executions_router(executions=executions))
 
     def authenticated_payload(request: Request) -> dict[str, object] | None:
@@ -446,23 +444,6 @@ def create_app(
             next_run_at=aware_utc(schedule.next_run_at),
             last_run_at=aware_utc(schedule.last_run_at),
             last_status=schedule.last_status,
-        )
-
-    def serialize_backup_status() -> BackupStatusRead:
-        status = backups.status()
-        return BackupStatusRead(
-            enabled=status.enabled,
-            configured=status.configured,
-            daily_time=status.daily_time,
-            timezone=status.timezone,
-            retention_count=status.retention_count,
-            next_run_at=aware_utc(status.next_run_at),
-            last_attempt_at=aware_utc(status.last_attempt_at),
-            last_success_at=aware_utc(status.last_success_at),
-            last_failure_at=aware_utc(status.last_failure_at),
-            last_error=status.last_error,
-            latest_backup_name=status.latest_backup_name,
-            latest_backup_size=status.latest_backup_size,
         )
 
     @app.get("/", include_in_schema=False)
@@ -594,52 +575,6 @@ def create_app(
     @app.get("/api/v1/plugins", response_model=list[PluginManifest])
     async def list_plugins() -> list[PluginManifest]:
         return [plugin.manifest for plugin in registry.all()]
-
-    @app.get("/api/v1/backups/status", response_model=BackupStatusRead)
-    async def backup_status() -> BackupStatusRead:
-        return serialize_backup_status()
-
-    @app.post("/api/v1/backups/run", response_model=BackupActionRead)
-    async def run_backup() -> BackupActionRead:
-        try:
-            destination = await backups.create_now()
-        except BackupError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return BackupActionRead(
-            success=True,
-            message=f"Encrypted backup created: {destination.name}",
-            status=serialize_backup_status(),
-        )
-
-    @app.post("/api/v1/backups/check-latest", response_model=BackupActionRead)
-    async def check_latest_backup() -> BackupActionRead:
-        try:
-            destination = await backups.check_latest()
-        except BackupError as exc:
-            raise HTTPException(status_code=409, detail=str(exc)) from exc
-        return BackupActionRead(
-            success=True,
-            message=f"Backup is valid: {destination.name}",
-            status=serialize_backup_status(),
-        )
-
-    @app.put("/api/v1/backups/settings", response_model=BackupStatusRead)
-    async def update_backup_settings(request: BackupSettingsWrite) -> BackupStatusRead:
-        try:
-            await backups.update_settings(
-                enabled=request.enabled,
-                daily_time=request.daily_time,
-                timezone=request.timezone,
-                retention_count=request.retention_count,
-                password=(
-                    request.password.get_secret_value()
-                    if request.password is not None
-                    else None
-                ),
-            )
-        except ValueError as exc:
-            raise HTTPException(status_code=400, detail=str(exc)) from exc
-        return serialize_backup_status()
 
     @app.get("/api/v1/accounts", response_model=list[AccountRead])
     async def list_accounts() -> list[AccountRead]:
