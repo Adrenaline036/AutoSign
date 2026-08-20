@@ -9,8 +9,10 @@ from pydantic import SecretStr
 
 from autosign import __version__
 from autosign.core import backup
+from autosign.core.account_operations import AccountOperationRejectedError
 from autosign.core.browser_sessions import (
     BROWSER_STATE_SECRET,
+    BrowserStorageStateError,
     DeferredChromeBrowserSessionManager,
 )
 from autosign.core.config import Settings
@@ -540,6 +542,70 @@ def test_account_crud(tmp_path: Path) -> None:
         assert deleted.status_code == 204
         assert client.get("/api/v1/accounts").json() == []
         assert client.get("/api/v1/executions").json() == []
+
+
+def test_account_routes_preserve_failure_mapping(tmp_path: Path) -> None:
+    app = create_app(settings_for_test(tmp_path))
+    with TestClient(app) as client:
+        invalid_plugin = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "unknown", "label": "Invalid"},
+        )
+        assert invalid_plugin.status_code == 400
+        assert client.get("/api/v1/accounts").json() == []
+
+        assert client.get("/api/v1/accounts/unknown").status_code == 404
+        assert client.patch(
+            "/api/v1/accounts/unknown",
+            json={"enabled": False},
+        ).status_code == 404
+        assert client.get("/api/v1/accounts/unknown/secrets").status_code == 404
+        assert client.post("/api/v1/accounts/unknown/execute").status_code == 404
+        assert client.delete("/api/v1/accounts/unknown/schedule").status_code == 404
+
+        account = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "Failure Demo"},
+        ).json()
+        account_id = account["id"]
+
+        invalid_secret_name = client.put(
+            f"/api/v1/accounts/{account_id}/secrets/{'x' * 101}",
+            json={"value": "test-only-secret"},
+        )
+        assert invalid_secret_name.status_code == 400
+        missing_secret = client.delete(
+            f"/api/v1/accounts/{account_id}/secrets/missing",
+        )
+        assert missing_secret.status_code == 400
+
+        invalid_timezone = client.put(
+            f"/api/v1/accounts/{account_id}/schedule",
+            json={"daily_time": "08:30", "timezone": "Invalid/Timezone"},
+        )
+        assert invalid_timezone.status_code == 400
+        assert client.get("/api/v1/schedules").json() == []
+
+        app.state.executions.execute = AsyncMock(
+            side_effect=BrowserStorageStateError("invalid stored browser state")
+        )
+        failed_execution = client.post(f"/api/v1/accounts/{account_id}/execute")
+        assert failed_execution.status_code == 409
+        assert failed_execution.json()["detail"] == "invalid stored browser state"
+
+        @asynccontextmanager
+        async def reject_delete(_account_id: str):
+            raise AccountOperationRejectedError("account is busy")
+            yield
+
+        app.state.account_operations.delete = reject_delete
+        rejected_delete = client.post(
+            f"/api/v1/accounts/{account_id}/delete",
+            json={"confirm_label": "Failure Demo"},
+        )
+        assert rejected_delete.status_code == 409
+        assert rejected_delete.json()["detail"] == "account is busy"
+        assert client.get(f"/api/v1/accounts/{account_id}").status_code == 200
 
 
 def test_execution_history_filters_and_validates_limit(tmp_path: Path) -> None:

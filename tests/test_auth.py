@@ -58,6 +58,16 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
             json={},
         )
         assert notification_without_csrf.status_code == 403
+        account_secret_without_csrf = client.put(
+            "/api/v1/accounts/unknown/secrets/token",
+            json={"value": "must-not-be-saved"},
+        )
+        assert account_secret_without_csrf.status_code == 403
+        schedule_without_csrf = client.put(
+            "/api/v1/accounts/unknown/schedule",
+            json={"daily_time": "08:30"},
+        )
+        assert schedule_without_csrf.status_code == 403
 
         paste_without_csrf = client.post(
             "/api/v1/browser-sessions/unknown/type",
