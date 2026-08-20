@@ -25,4 +25,12 @@ def create_frontend_assets_router() -> APIRouter:
             headers={"Cache-Control": "no-store"},
         )
 
+    @router.get("/assets/browser.js", include_in_schema=False)
+    async def browser_script() -> FileResponse:
+        return FileResponse(
+            STATIC_DIR / "browser.js",
+            media_type="text/javascript",
+            headers={"Cache-Control": "no-store"},
+        )
+
     return router

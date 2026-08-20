@@ -640,6 +640,7 @@
 
     <script src="/assets/accounts.js"></script>
     <script src="/assets/history.js"></script>
+    <script src="/assets/browser.js"></script>
     <script src="/assets/vikacg-recovery.js"></script>
     <script>
       const state = {
@@ -660,7 +661,6 @@
       const systemStatusContainer = document.querySelector("#system-status");
       const backupSettingsDialog = document.querySelector("#backup-settings-dialog");
       const backupSettingsForm = document.querySelector("#backup-settings-form");
-      const forceBrowserSaveDialog = document.querySelector("#force-browser-save-dialog");
       const scheduleDialog = document.querySelector("#schedule-dialog");
       const scheduleForm = document.querySelector("#schedule-form");
       const scheduleDialogAccount = document.querySelector("#schedule-dialog-account");
@@ -674,22 +674,10 @@
       const channelAssignmentForm = document.querySelector("#channel-assignment-form");
       const channelAssignmentList = document.querySelector("#channel-assignment-list");
       const deleteChannelDialog = document.querySelector("#delete-channel-dialog");
-      const browserDialog = document.querySelector("#browser-login-dialog");
-      const browserDialogAccount = document.querySelector("#browser-dialog-account");
-      const browserPageTitle = document.querySelector("#browser-page-title");
-      const browserWebHelp = document.querySelector("#browser-web-help");
-      const browserNativeHelp = document.querySelector("#browser-native-help");
-      const browserLiveOpen = document.querySelector("#browser-live-open");
-      const browserSave = document.querySelector("#browser-save");
-      const browserDiscard = document.querySelector("#browser-discard");
       let scheduleAccountId = null;
       let editingChannelId = null;
       let assignmentAccountId = null;
       let deletingChannelId = null;
-      let activeBrowserSession = null;
-      let browserPollTimer = null;
-      let browserClosing = false;
-      let activeBrowserWindow = null;
 
       function showNotice(message, error = false) {
         notice.textContent = message;
@@ -736,10 +724,12 @@
         trash: '<svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>'
       };
 
+      const browserUi = window.createBrowserUi({api, loadAccounts, showNotice});
+
       const vikacgRecovery = window.createVikacgRecovery({
         api,
         loadAccounts,
-        openBrowserLogin,
+        openBrowserLogin: browserUi.open,
         showNotice
       });
 
@@ -751,7 +741,7 @@
         icons: ICONS,
         loadAccounts,
         loadExecutions: historyUi.load,
-        openBrowserLogin,
+        openBrowserLogin: browserUi.open,
         openChannelAssignment,
         openScheduleDialog,
         openVikacgRecovery: vikacgRecovery.open,
@@ -794,131 +784,6 @@
           schedule?.retry_delay_minutes ?? 5;
         scheduleDelete.hidden = !schedule;
         scheduleDialog.showModal();
-      }
-
-      function scheduleBrowserStatusRefresh(delay = 2000) {
-        window.clearTimeout(browserPollTimer);
-        if (!activeBrowserSession) return;
-        browserPollTimer = window.setTimeout(refreshBrowserInfo, delay);
-      }
-
-      function openLiveBrowserWindow() {
-        if (!activeBrowserSession) return null;
-        if (!activeBrowserSession.live_url) {
-          api(`/api/v1/browser-sessions/${activeBrowserSession.id}/focus`, {
-            method: "POST", body: "{}"
-          }).catch((error) => showNotice(error.message, true));
-          return null;
-        }
-        const liveUrl = new URL(activeBrowserSession.live_url, window.location.href).href;
-        activeBrowserWindow = window.open(liveUrl, "_blank");
-        if (!activeBrowserWindow) {
-          showNotice("浏览器阻止了新标签，请允许此站点打开弹出窗口后重试", true);
-        }
-        return activeBrowserWindow;
-      }
-
-      function showBrowserInteractionMode() {
-        const nativeWindow = Boolean(activeBrowserSession && !activeBrowserSession.live_url);
-        browserPageTitle.textContent = nativeWindow
-          ? "普通 Chrome 登录窗口已打开（尚未接管）"
-          : "实时浏览器已在独立标签中打开";
-        browserWebHelp.hidden = nativeWindow;
-        browserNativeHelp.hidden = !nativeWindow;
-        browserLiveOpen.textContent = nativeWindow
-          ? "Chrome 窗口已打开（使用 Alt+Tab 切换）"
-          : "打开或重新打开实时浏览器";
-      }
-
-      function handleBrowserSessionError(error) {
-        showNotice(error.message, true);
-        if (error.status !== 404) return false;
-        activeBrowserSession = null;
-        window.clearTimeout(browserPollTimer);
-        if (activeBrowserWindow && !activeBrowserWindow.closed) activeBrowserWindow.close();
-        activeBrowserWindow = null;
-        if (browserDialog.open) browserDialog.close();
-        return true;
-      }
-
-      async function refreshBrowserInfo() {
-        if (!activeBrowserSession) return;
-        try {
-          const info = await api(`/api/v1/browser-sessions/${activeBrowserSession.id}`);
-          activeBrowserSession = info;
-          showBrowserInteractionMode();
-          scheduleBrowserStatusRefresh();
-        } catch (error) {
-          if (!handleBrowserSessionError(error)) scheduleBrowserStatusRefresh(4000);
-        }
-      }
-
-      async function openBrowserLogin(account) {
-        const pendingWindow = window.open("about:blank", "_blank");
-        browserDialogAccount.textContent = `账户：${account.label}`;
-        browserPageTitle.textContent = "正在启动实时浏览器…";
-        browserWebHelp.hidden = false;
-        browserNativeHelp.hidden = true;
-        browserLiveOpen.disabled = true;
-        browserDialog.showModal();
-        try {
-          activeBrowserSession = await api(
-            `/api/v1/accounts/${account.id}/browser-session`,
-            {method: "POST", body: "{}"}
-          );
-          showBrowserInteractionMode();
-          browserLiveOpen.disabled = false;
-          if (!activeBrowserSession.live_url) {
-            if (pendingWindow) pendingWindow.close();
-            activeBrowserWindow = null;
-          } else if (pendingWindow) {
-            activeBrowserWindow = pendingWindow;
-            const liveUrl = new URL(activeBrowserSession.live_url, window.location.href).href;
-            pendingWindow.location.replace(liveUrl);
-          } else {
-            showNotice("浏览器阻止了新标签，请点击“打开或重新打开实时浏览器”", true);
-          }
-          scheduleBrowserStatusRefresh();
-        } catch (error) {
-          if (pendingWindow) pendingWindow.close();
-          showNotice(error.message, true);
-          browserDialog.close();
-        }
-      }
-
-      async function closeBrowserLogin(saveState, forceSave = false) {
-        if (browserClosing) return;
-        browserClosing = true;
-        window.clearTimeout(browserPollTimer);
-        try {
-          let closeResult = null;
-          if (activeBrowserSession) {
-            closeResult = await api(`/api/v1/browser-sessions/${activeBrowserSession.id}/close`, {
-              method: "POST",
-              body: JSON.stringify({save_state: saveState, force_save: forceSave})
-            });
-          }
-          activeBrowserSession = null;
-          if (activeBrowserWindow && !activeBrowserWindow.closed) activeBrowserWindow.close();
-          activeBrowserWindow = null;
-          browserDialog.close();
-          await loadAccounts();
-          if (!saveState) {
-            showNotice("临时浏览器会话已丢弃");
-          } else if (closeResult?.verified) {
-            showNotice("已检测到登录状态，浏览器会话已加密保存");
-          } else {
-            showNotice("已按你的确认加密保存当前浏览器状态；后续签到会再次验证");
-          }
-        } catch (error) {
-          if (saveState && !forceSave && error.status === 409) {
-            forceBrowserSaveDialog.showModal();
-          } else {
-            handleBrowserSessionError(error);
-          }
-        } finally {
-          browserClosing = false;
-        }
       }
 
       function renderPlugins() {
@@ -1379,23 +1244,6 @@
         document.querySelector("#delete-channel-name").textContent = "";
       });
 
-      browserLiveOpen.addEventListener("click", openLiveBrowserWindow);
-      browserSave.addEventListener("click", () => closeBrowserLogin(true));
-      browserDiscard.addEventListener("click", () => closeBrowserLogin(false));
-      document.querySelector("#browser-dialog-close").addEventListener("click", () => {
-        closeBrowserLogin(false);
-      });
-
-      browserDialog.addEventListener("cancel", (event) => {
-        event.preventDefault();
-        closeBrowserLogin(false);
-      });
-
-      browserDialog.addEventListener("close", () => {
-        window.clearTimeout(browserPollTimer);
-        browserLiveOpen.disabled = false;
-      });
-
       document.querySelector("#logout").addEventListener("click", async () => {
         try {
           await api("/api/v1/auth/logout", {method: "POST", body: "{}"});
@@ -1485,24 +1333,6 @@
           }
         }
       );
-      function closeForceBrowserSaveDialog() {
-        forceBrowserSaveDialog.close();
-      }
-      document.querySelector("#force-browser-save-close").addEventListener(
-        "click", closeForceBrowserSaveDialog
-      );
-      document.querySelector("#force-browser-save-cancel").addEventListener(
-        "click", closeForceBrowserSaveDialog
-      );
-      document.querySelector("#force-browser-save-confirm").addEventListener("click", () => {
-        closeForceBrowserSaveDialog();
-        closeBrowserLogin(true, true);
-      });
-      forceBrowserSaveDialog.addEventListener("cancel", (event) => {
-        event.preventDefault();
-        closeForceBrowserSaveDialog();
-      });
-
       api("/api/v1/auth/status")
         .then((authStatus) => {
           if (!authStatus.authenticated) {

@@ -99,6 +99,7 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
         dashboard = client.get("/")
         accounts_script = client.get("/assets/accounts.js")
         history_script = client.get("/assets/history.js")
+        browser_script = client.get("/assets/browser.js")
         vikacg_recovery_script = client.get("/assets/vikacg-recovery.js")
         health = client.get("/healthz")
         plugins = client.get("/api/v1/plugins")
@@ -118,9 +119,11 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert 'type="password" autocomplete="off"' in dashboard.text
     assert '<script src="/assets/accounts.js"></script>' in dashboard.text
     assert '<script src="/assets/history.js"></script>' in dashboard.text
+    assert '<script src="/assets/browser.js"></script>' in dashboard.text
     assert '<script src="/assets/vikacg-recovery.js"></script>' in dashboard.text
     assert "window.createAccountsUi" in accounts_script.text
     assert "window.createHistoryUi" in history_script.text
+    assert "window.createBrowserUi" in browser_script.text
     assert 'api("/api/v1/executions?limit=6")' in history_script.text
     assert "loadExecutions: historyUi.load" in dashboard.text
     assert "historyUi.render()" in dashboard.text
@@ -130,6 +133,9 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert accounts_script.headers["cache-control"] == "no-store"
     assert history_script.status_code == 200
     assert history_script.headers["cache-control"] == "no-store"
+    assert browser_script.status_code == 200
+    assert browser_script.headers["cache-control"] == "no-store"
+    assert dashboard.text.count("openBrowserLogin: browserUi.open") == 2
     assert vikacg_recovery_script.status_code == 200
     assert vikacg_recovery_script.headers["cache-control"] == "no-store"
     assert "window.createVikacgRecovery" in vikacg_recovery_script.text
@@ -184,10 +190,11 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert 'id="browser-live-panel"' in dashboard.text
     assert 'id="browser-live-open"' in dashboard.text
     assert 'id="browser-native-help"' in dashboard.text
-    assert "普通 Chrome 登录窗口已打开（尚未接管）" in dashboard.text
+    assert "普通 Chrome 登录窗口已打开（尚未接管）" in browser_script.text
     assert "AutoSign 此时尚未连接浏览器" in dashboard.text
-    assert "/focus`" in dashboard.text
-    assert "activeBrowserSession.live_url" in dashboard.text
+    assert "/focus`" in browser_script.text
+    assert "activeSession.live_url" in browser_script.text
+    assert "forceSaveDialog.showModal()" in browser_script.text
     assert 'id="browser-keyboard-capture"' not in dashboard.text
     assert "无法连接 AutoSign 服务" in dashboard.text
     assert 'id="execution-history"' in dashboard.text
