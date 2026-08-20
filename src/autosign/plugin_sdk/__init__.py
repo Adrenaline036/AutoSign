@@ -1,4 +1,5 @@
 from autosign.plugin_sdk.contracts import (
+    PLUGIN_API_VERSION,
     AutoSignPlugin,
     BrowserAutomation,
     BrowserResponse,
@@ -18,6 +19,7 @@ __all__ = [
     "BrowserAutomation",
     "BrowserResponse",
     "BrowserTransientReadError",
+    "PLUGIN_API_VERSION",
     "PluginCapability",
     "PluginContext",
     "PluginManifest",

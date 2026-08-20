@@ -3,7 +3,10 @@ from __future__ import annotations
 from collections.abc import Iterable
 from importlib.metadata import entry_points
 
-from autosign.plugin_sdk import AutoSignPlugin
+from autosign.plugin_sdk import (
+    PLUGIN_API_VERSION,
+    AutoSignPlugin,
+)
 from autosign.plugins.acgrip import AcgripPlugin
 from autosign.plugins.baidu_tieba import BaiduTiebaPlugin
 from autosign.plugins.demo import DemoPlugin
@@ -30,6 +33,12 @@ class PluginRegistry:
         for plugin_type in plugin_types:
             plugin = plugin_type()
             plugin_id = plugin.manifest.id
+            if plugin.manifest.api_version != PLUGIN_API_VERSION:
+                raise ValueError(
+                    f"Unsupported plugin API version for {plugin_id}: "
+                    f"{plugin.manifest.api_version}; expected "
+                    f"{PLUGIN_API_VERSION}."
+                )
             if plugin_id in discovered:
                 raise ValueError(f"Duplicate plugin id: {plugin_id}")
             discovered[plugin_id] = plugin

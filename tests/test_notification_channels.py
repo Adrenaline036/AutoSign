@@ -5,7 +5,7 @@ from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
 from autosign.core.config import Settings
-from autosign.core.db import Database
+from autosign.core.db import AppMetadata, Database
 from autosign.core.security import SecretCipher
 from autosign.core.services.accounts import AccountService
 from autosign.core.services.monitoring import (
@@ -20,7 +20,11 @@ from autosign.core.services.napcat import (
     NapCatClient,
     NapCatConfig,
 )
-from autosign.core.services.notifications import NotificationChannelService
+from autosign.core.services.notifications import (
+    LEGACY_MIGRATION_COMPLETE,
+    LEGACY_MIGRATION_KEY,
+    NotificationChannelService,
+)
 from autosign.core.services.vault import VaultService
 from autosign.plugin_sdk import SignResult, SignStatus
 from autosign.web.app import create_app
@@ -132,6 +136,7 @@ async def test_notification_service_maps_final_results_to_assigned_channels(
 
 def test_legacy_notification_secrets_are_migrated_and_deduplicated(
     tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     key = SecretCipher.generate_key()
     settings = Settings(
@@ -196,6 +201,10 @@ def test_legacy_notification_secrets_are_migrated_and_deduplicated(
     migrated_vault = VaultService(migrated_database, cipher)
     assert migrated_vault.list_names(first.id) == ["browser_storage_state"]
     assert migrated_vault.list_names(second.id) == []
+    with migrated_database.session() as session:
+        marker = session.get(AppMetadata, LEGACY_MIGRATION_KEY)
+        assert marker is not None
+        assert marker.value == LEGACY_MIGRATION_COMPLETE
     database_text = (tmp_path / "autosign.db").read_bytes().decode(
         "utf-8",
         errors="ignore",
@@ -205,5 +214,141 @@ def test_legacy_notification_secrets_are_migrated_and_deduplicated(
     assert "monitor-token" not in database_text
     migrated_database.dispose()
 
+    def fail_if_startup_rescans(*_args, **_kwargs) -> int:
+        raise AssertionError("Completed legacy migration must not rescan accounts.")
+
+    monkeypatch.setattr(
+        NotificationChannelService,
+        "_migrate_legacy_accounts",
+        fail_if_startup_rescans,
+    )
     with TestClient(create_app(settings)) as client:
         assert len(client.get("/api/v1/notification-channels").json()) == 2
+
+
+def test_legacy_notification_migration_recovers_after_durable_boundary_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = SecretCipher.generate_key()
+    database = Database(f"sqlite:///{(tmp_path / 'recovery.db').as_posix()}")
+    database.migrate()
+    cipher = SecretCipher(key)
+    vault = VaultService(database, cipher)
+    vault.initialize_key_check()
+    account = AccountService(database).create(
+        plugin_id="demo",
+        label="Recovery",
+        enabled=True,
+        settings={},
+    )
+    vault.set(
+        account.id,
+        UPTIME_KUMA_PUSH_URL_SECRET,
+        "https://kuma.example/api/push/recovery-token",
+    )
+    service = NotificationChannelService(database, cipher)
+    delete_many = vault.delete_many
+
+    def fail_before_legacy_secret_delete(_account_id: str, _names: set[str]) -> None:
+        raise RuntimeError("injected legacy secret delete failure")
+
+    monkeypatch.setattr(vault, "delete_many", fail_before_legacy_secret_delete)
+    with pytest.raises(RuntimeError, match="injected legacy secret delete failure"):
+        service.migrate_legacy(vault)
+
+    assert service.legacy_migration_complete() is False
+    assert len(service.list()) == 1
+    assert len(service.assigned_to_account(account.id)) == 1
+    assert UPTIME_KUMA_PUSH_URL_SECRET in vault.list_names(account.id)
+
+    monkeypatch.setattr(vault, "delete_many", delete_many)
+    assert service.migrate_legacy(vault) == 1
+    assert service.legacy_migration_complete() is True
+    assert len(service.list()) == 1
+    assert len(service.assigned_to_account(account.id)) == 1
+    assert UPTIME_KUMA_PUSH_URL_SECRET not in vault.list_names(account.id)
+    assert service.migrate_legacy(vault) == 0
+
+    vault.set(
+        account.id,
+        UPTIME_KUMA_PUSH_URL_SECRET,
+        "https://kuma.example/api/push/recovery-token",
+    )
+    monkeypatch.setattr(vault, "delete_many", fail_before_legacy_secret_delete)
+    with pytest.raises(RuntimeError, match="injected legacy secret delete failure"):
+        service.migrate_legacy(vault, force=True)
+    assert service.legacy_migration_complete() is False
+    assert UPTIME_KUMA_PUSH_URL_SECRET in vault.list_names(account.id)
+
+    monkeypatch.setattr(vault, "delete_many", delete_many)
+    assert service.migrate_legacy(vault) == 1
+    assert service.legacy_migration_complete() is True
+    assert len(service.list()) == 1
+    assert UPTIME_KUMA_PUSH_URL_SECRET not in vault.list_names(account.id)
+    database.dispose()
+
+
+def test_application_startup_retries_legacy_migration_after_failure(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    key = SecretCipher.generate_key()
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(key),
+        auth_disabled=True,
+    )
+    settings.prepare_directories()
+    database = Database(settings.database_url)
+    database.migrate()
+    cipher = SecretCipher(key)
+    vault = VaultService(database, cipher)
+    vault.initialize_key_check()
+    account = AccountService(database).create(
+        plugin_id="demo",
+        label="Startup recovery",
+        enabled=True,
+        settings={},
+    )
+    vault.set(
+        account.id,
+        UPTIME_KUMA_PUSH_URL_SECRET,
+        "https://kuma.example/api/push/startup-recovery-token",
+    )
+    database.dispose()
+
+    delete_many = VaultService.delete_many
+
+    def fail_startup_delete(
+        _vault: VaultService,
+        _account_id: str,
+        _names: set[str],
+    ) -> None:
+        raise RuntimeError("injected startup migration failure")
+
+    monkeypatch.setattr(VaultService, "delete_many", fail_startup_delete)
+    with pytest.raises(RuntimeError, match="injected startup migration failure"):
+        with TestClient(create_app(settings)):
+            pass
+
+    failed_database = Database(settings.database_url)
+    failed_vault = VaultService(failed_database, cipher)
+    failed_service = NotificationChannelService(failed_database, cipher)
+    assert failed_service.legacy_migration_complete() is False
+    assert UPTIME_KUMA_PUSH_URL_SECRET in failed_vault.list_names(account.id)
+    failed_database.dispose()
+
+    monkeypatch.setattr(VaultService, "delete_many", delete_many)
+    with TestClient(create_app(settings)) as client:
+        channels = client.get("/api/v1/notification-channels").json()
+        assert len(channels) == 1
+
+    recovered_database = Database(settings.database_url)
+    recovered_vault = VaultService(recovered_database, cipher)
+    recovered_service = NotificationChannelService(recovered_database, cipher)
+    assert recovered_service.legacy_migration_complete() is True
+    assert UPTIME_KUMA_PUSH_URL_SECRET not in recovered_vault.list_names(account.id)
+    assert len(recovered_service.list()) == 1
+    recovered_database.dispose()

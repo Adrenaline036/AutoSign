@@ -10,6 +10,8 @@ from typing import Any, Protocol, Self
 
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 
+PLUGIN_API_VERSION = 1
+
 
 class PluginCapability(StrEnum):
     INTERACTIVE_LOGIN = "interactive_login"
@@ -42,7 +44,7 @@ class PluginManifest(BaseModel):
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
     name: str
     version: str
-    api_version: int = 1
+    api_version: int = PLUGIN_API_VERSION
     description: str = ""
     domains: list[str] = Field(default_factory=list)
     login_url: str | None = None
@@ -171,7 +173,10 @@ class PluginContext:
     account_label: str
     settings: Mapping[str, Any] = field(default_factory=dict)
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("autosign.plugin"))
-    http: Any | None = None
+    http: Any | None = field(
+        default=None,
+        metadata={"deprecated": "Reserved in SDK v1; it was never injected by AutoSign."},
+    )
     browser: BrowserAutomation | None = None
     secrets: SecretAccessor = field(default_factory=EmptySecretAccessor, repr=False)
 
@@ -179,9 +184,12 @@ class PluginContext:
 class AutoSignPlugin(ABC):
     manifest: PluginManifest
 
-    @abstractmethod
     async def check_session(self, context: PluginContext) -> SessionResult:
-        """Return whether the stored site session can be used."""
+        """Deprecated SDK v1 hook; execution validates sessions inside ``sign()``."""
+        return SessionResult(
+            state=SessionState.UNKNOWN,
+            message="The session is validated when the plugin executes.",
+        )
 
     @abstractmethod
     async def sign(self, context: PluginContext) -> SignResult:

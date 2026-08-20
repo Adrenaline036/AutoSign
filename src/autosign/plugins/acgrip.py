@@ -8,8 +8,6 @@ from autosign.plugin_sdk import (
     PluginCapability,
     PluginContext,
     PluginManifest,
-    SessionResult,
-    SessionState,
     SignResult,
     SignStatus,
 )
@@ -44,12 +42,6 @@ class AcgripPlugin(AutoSignPlugin):
             PluginCapability.BROWSER_SIGN,
         },
     )
-
-    async def check_session(self, context: PluginContext) -> SessionResult:
-        return SessionResult(
-            state=SessionState.UNKNOWN,
-            message="ACGRip 会话将在浏览器中检测。",
-        )
 
     async def sign(self, context: PluginContext) -> SignResult:
         browser = context.browser

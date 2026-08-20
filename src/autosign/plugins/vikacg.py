@@ -13,8 +13,6 @@ from autosign.plugin_sdk import (
     PluginCapability,
     PluginContext,
     PluginManifest,
-    SessionResult,
-    SessionState,
     SignResult,
     SignStatus,
 )
@@ -87,12 +85,6 @@ class VikacgPlugin(AutoSignPlugin):
             PluginCapability.BROWSER_FALLBACK,
         },
     )
-
-    async def check_session(self, context: PluginContext) -> SessionResult:
-        return SessionResult(
-            state=SessionState.UNKNOWN,
-            message="VikACG 会话将在每日签到页面中检测。",
-        )
 
     async def sign(self, context: PluginContext) -> SignResult:
         browser = context.browser

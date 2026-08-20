@@ -3,7 +3,21 @@ from __future__ import annotations
 import pytest
 from pydantic import ValidationError
 
-from autosign.plugin_sdk import SignResult, SignStatus
+from autosign.plugin_sdk import (
+    AutoSignPlugin,
+    PluginContext,
+    PluginManifest,
+    SessionState,
+    SignResult,
+    SignStatus,
+)
+
+
+class MinimalPlugin(AutoSignPlugin):
+    manifest = PluginManifest(id="minimal", name="Minimal", version="1.0.0")
+
+    async def sign(self, context: PluginContext) -> SignResult:
+        return SignResult(status=SignStatus.SUCCESS, message="ok", verified=True)
 
 
 @pytest.mark.parametrize(
@@ -84,3 +98,19 @@ def test_sign_result_model_copy_rejects_inconsistent_update(
 ) -> None:
     with pytest.raises(ValidationError, match="verified must be true only"):
         result.model_copy(update=update)
+
+
+@pytest.mark.asyncio
+async def test_plugin_sdk_v1_defaults_deprecated_session_check_to_unknown() -> None:
+    result = await MinimalPlugin().check_session(
+        PluginContext(account_id="account-1", account_label="Minimal")
+    )
+
+    assert result.state is SessionState.UNKNOWN
+    assert "validated when the plugin executes" in result.message
+
+
+def test_plugin_context_marks_uninjected_http_field_as_deprecated() -> None:
+    field = PluginContext.__dataclass_fields__["http"]
+
+    assert "never injected" in field.metadata["deprecated"]

@@ -219,6 +219,8 @@ docker exec -it autosign python -m autosign restore /data/backups/<backup>.asbac
 
 ## 升级
 
+支持的直接升级起点为首个公开源码版本 `0.13.1`；更早的内部开发版本不属于常规兼容范围。升级仍应保留原数据库、数据目录和 `AUTOSIGN_MASTER_KEY`。
+
 1. 创建并校验一次加密备份。
 2. 备份当前 `.env` 和整个数据目录。
 3. 拉取新代码或导入新镜像。
@@ -227,6 +229,22 @@ docker exec -it autosign python -m autosign restore /data/backups/<backup>.asbac
 6. 分别手动执行关键账户，再恢复自动计划。
 
 数据库迁移会在容器启动时自动执行。不要通过删除数据库或重新生成主密钥来解决升级问题。
+
+通知渠道迁移只在首次需要时扫描旧账户秘密，成功后记录完成状态，后续启动不再重复扫描。如果从早期内部版本升级后发现 Uptime Kuma 或 NapCat 渠道缺失，应先停止正式服务并校验备份，再执行一次显式修复：
+
+```powershell
+.\.venv\Scripts\python.exe -m autosign repair-legacy-notifications
+```
+
+Docker Compose 环境可在停止正式服务后使用同一数据卷和主密钥运行一次性命令：
+
+```bash
+docker compose stop autosign
+docker compose run --rm autosign python -m autosign repair-legacy-notifications
+docker compose up -d autosign
+```
+
+修复过程会复用已存在的相同渠道和账户分配；若中途失败，不会写入完成标记，下次启动或再次执行修复时会继续幂等处理。不要在正式容器仍写入数据库时并行运行修复命令。
 
 ## 本地开发
 
@@ -249,6 +267,10 @@ Copy-Item .env.example .env
 ## 新增插件
 
 新插件应实现 `autosign.plugin_sdk.AutoSignPlugin`，并放在 `src/autosign/plugins/` 或通过 `autosign.plugins` entry point 发布。
+
+当前只支持插件 SDK `api_version=1`；registry 会在发现阶段拒绝其他版本，避免未知契约进入执行路径。SDK v1 的 `PluginManifest` 字段以及 `PluginContext.settings`、`logger`、`browser`、`secrets` 保持兼容：`domains`、`settings_schema` 和 `capabilities` 作为插件/API 元数据保留，`secrets` 只提供当前账户作用域的秘密读取。
+
+`check_session()` 是已弃用的 v1 兼容钩子，生产执行不会单独调用它；默认返回 `UNKNOWN`，插件必须在 `sign()` 内完成实际登录态判断。`PluginContext.http` 从未由 AutoSign 注入，现已标记弃用并始终为 `None`；新插件应使用受限的 `browser` 能力或自行封装站点客户端。上述弃用成员只会在未来 SDK v2 中删除。
 
 插件应负责：
 
