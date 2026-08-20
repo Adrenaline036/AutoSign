@@ -5,7 +5,12 @@ import json
 import pytest
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from autosign.plugin_sdk import BrowserResponse, PluginContext, SignStatus
+from autosign.plugin_sdk import (
+    BrowserResponse,
+    BrowserTransientReadError,
+    PluginContext,
+    SignStatus,
+)
 from autosign.plugins.vikacg import VikacgImportError, VikacgPlugin
 
 
@@ -629,8 +634,8 @@ async def test_vikacg_rejects_unrecognized_page(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_vikacg_tolerates_transient_body_timeouts(monkeypatch) -> None:
     monkeypatch.setattr("autosign.plugins.vikacg.asyncio.sleep", _no_sleep)
-    body_timeout = PlaywrightTimeoutError(
-        'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
+    body_timeout = BrowserTransientReadError(
+        "The page replaced its body before it could be read."
     )
     browser = FakeVikacgBrowser(
         [
@@ -654,8 +659,8 @@ async def test_vikacg_reports_repeated_body_timeouts_as_load_failure(monkeypatch
     monkeypatch.setattr("autosign.plugins.vikacg.asyncio.sleep", _no_sleep)
     browser = FakeVikacgBrowser(
         [
-            PlaywrightTimeoutError(
-                'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
+            BrowserTransientReadError(
+                "The page replaced its body before it could be read."
             )
             for _ in range(VikacgPlugin.BODY_READ_TIMEOUT_LIMIT)
         ]
@@ -680,8 +685,8 @@ async def test_vikacg_reports_repeated_body_timeouts_after_click(monkeypatch) ->
         [
             "积分与签到 今日未签 立即签到",
             *[
-                PlaywrightTimeoutError(
-                    'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
+                BrowserTransientReadError(
+                    "The page replaced its body before it could be read."
                 )
                 for _ in range(VikacgPlugin.BODY_READ_TIMEOUT_LIMIT)
             ],

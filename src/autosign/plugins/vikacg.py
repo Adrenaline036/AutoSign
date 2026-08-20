@@ -9,6 +9,7 @@ from typing import Any
 from autosign.plugin_sdk import (
     AutoSignPlugin,
     BrowserAutomation,
+    BrowserTransientReadError,
     PluginCapability,
     PluginContext,
     PluginManifest,
@@ -800,12 +801,8 @@ class VikacgPlugin(AutoSignPlugin):
         """Ignore only transient Playwright timeouts while the SPA replaces ``body``."""
         try:
             return await browser.body_text()
-        except Exception as exc:
-            message = str(exc)
-            is_body_timeout = type(exc).__name__ == "TimeoutError" and 'locator("body")' in message
-            if is_body_timeout:
-                return None
-            raise
+        except BrowserTransientReadError:
+            return None
 
     @staticmethod
     def _login_required(text: str) -> bool:

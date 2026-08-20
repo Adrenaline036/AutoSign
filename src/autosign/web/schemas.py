@@ -142,23 +142,6 @@ class ScheduleRead(BaseModel):
     last_status: str | None
 
 
-class MonitorPushWrite(BaseModel):
-    push_url: SecretStr = Field(min_length=10, max_length=2048)
-
-
-class MonitorDeliveryRead(BaseModel):
-    configured: bool
-    success: bool
-    message: str
-
-
-class NapCatConfigWrite(BaseModel):
-    base_url: str = Field(min_length=8, max_length=2048)
-    access_token: SecretStr = Field(min_length=1, max_length=512)
-    target_type: str = Field(pattern=r"^(private|group)$")
-    target_id: str = Field(pattern=r"^\d{5,20}$")
-
-
 class NotificationChannelWrite(BaseModel):
     name: str = Field(min_length=1, max_length=100)
     channel_type: str = Field(pattern=r"^(uptime_kuma|napcat)$")

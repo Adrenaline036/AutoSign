@@ -1,5 +1,6 @@
 from pathlib import Path
 
+import pytest
 from fastapi.testclient import TestClient
 from pydantic import SecretStr
 
@@ -7,15 +8,126 @@ from autosign.core.config import Settings
 from autosign.core.db import Database
 from autosign.core.security import SecretCipher
 from autosign.core.services.accounts import AccountService
-from autosign.core.services.monitoring import UPTIME_KUMA_PUSH_URL_SECRET
+from autosign.core.services.monitoring import (
+    UPTIME_KUMA_PUSH_URL_SECRET,
+    UptimeKumaPushClient,
+)
 from autosign.core.services.napcat import (
     NAPCAT_BASE_URL_SECRET,
     NAPCAT_TARGET_ID_SECRET,
     NAPCAT_TARGET_TYPE_SECRET,
     NAPCAT_TOKEN_SECRET,
+    NapCatClient,
+    NapCatConfig,
 )
+from autosign.core.services.notifications import NotificationChannelService
 from autosign.core.services.vault import VaultService
+from autosign.plugin_sdk import SignResult, SignStatus
 from autosign.web.app import create_app
+
+
+class FakeUptimeClient(UptimeKumaPushClient):
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def push(
+        self,
+        push_url: str,
+        *,
+        status: str,
+        message: str,
+        ping_ms: int | None = None,
+    ) -> None:
+        self.calls.append(
+            {
+                "push_url": push_url,
+                "status": status,
+                "message": message,
+                "ping_ms": ping_ms,
+            }
+        )
+
+
+class FakeNapCatClient(NapCatClient):
+    def __init__(self) -> None:
+        self.messages: list[tuple[NapCatConfig, str]] = []
+
+    async def send(self, config: NapCatConfig, message: str) -> None:
+        self.messages.append((config, message))
+
+
+@pytest.mark.asyncio
+async def test_notification_service_maps_final_results_to_assigned_channels(
+    tmp_path: Path,
+) -> None:
+    database = Database(f"sqlite:///{(tmp_path / 'notifications.db').as_posix()}")
+    database.migrate()
+    account = AccountService(database).create(
+        plugin_id="demo",
+        label="通知测试",
+        enabled=True,
+        settings={},
+    )
+    uptime = FakeUptimeClient()
+    napcat = FakeNapCatClient()
+    service = NotificationChannelService(
+        database,
+        SecretCipher(SecretCipher.generate_key()),
+        uptime_client=uptime,
+        napcat_client=napcat,
+    )
+    kuma_channel = service.create(
+        name="Test Kuma",
+        channel_type="uptime_kuma",
+        config={"push_url": "https://kuma.example/api/push/secret-token"},
+    )
+    napcat_channel = service.create(
+        name="Test QQ",
+        channel_type="napcat",
+        config={
+            "base_url": "http://napcat.example:3000",
+            "access_token": "secret-token",
+            "target_type": "private",
+            "target_id": "123456789",
+        },
+    )
+    service.assign(account.id, [kuma_channel.id, napcat_channel.id])
+
+    success_deliveries = await service.send_result(
+        account.id,
+        account_label=account.label,
+        plugin_id="demo",
+        result=SignResult(
+            status=SignStatus.ALREADY_SIGNED,
+            message="今日已经签到",
+            verified=True,
+            duration_ms=321,
+        ),
+    )
+    failure_deliveries = await service.send_result(
+        account.id,
+        account_label=account.label,
+        plugin_id="demo",
+        result=SignResult(
+            status=SignStatus.INTERACTION_REQUIRED,
+            message="需要重新登录",
+            verified=False,
+        ),
+    )
+
+    assert len(success_deliveries) == 2
+    assert all(delivery.success for delivery in success_deliveries)
+    assert len(failure_deliveries) == 2
+    assert all(delivery.success for delivery in failure_deliveries)
+    assert uptime.calls[0]["status"] == "up"
+    assert uptime.calls[0]["ping_ms"] == 321
+    assert uptime.calls[1]["status"] == "down"
+    assert "【AutoSign 每日签到】" in napcat.messages[0][1]
+    assert "账户：通知测试" in napcat.messages[0][1]
+    assert "结果：今日已签到" in napcat.messages[0][1]
+    assert "耗时：321 ms" in napcat.messages[0][1]
+    assert "结果：需要重新登录" in napcat.messages[1][1]
+    database.dispose()
 
 
 def test_legacy_notification_secrets_are_migrated_and_deduplicated(

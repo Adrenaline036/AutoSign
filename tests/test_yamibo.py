@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import pytest
 
-from autosign.plugin_sdk import PluginContext, SignStatus
+from autosign.plugin_sdk import BrowserTransientReadError, PluginContext, SignStatus
 from autosign.plugins.yamibo import YamiboPlugin
 
 
@@ -215,10 +215,8 @@ async def test_yamibo_repairs_mojibake_login_prompt() -> None:
     assert result.details["result_excerpt"] == "请登录之后继续..."
 
 
-def _body_timeout() -> TimeoutError:
-    return TimeoutError(
-        'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
-    )
+def _body_timeout() -> BrowserTransientReadError:
+    return BrowserTransientReadError("The page replaced its body before it could be read.")
 
 
 @pytest.mark.asyncio

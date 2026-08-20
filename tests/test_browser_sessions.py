@@ -8,6 +8,7 @@ from pathlib import Path
 
 import pytest
 from fastapi.testclient import TestClient
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import SecretStr
 
 import autosign.core.browser_sessions as browser_sessions_module
@@ -31,6 +32,7 @@ from autosign.core.browser_sessions import (
 )
 from autosign.core.config import Settings
 from autosign.core.security import SecretCipher
+from autosign.plugin_sdk import BrowserTransientReadError
 from autosign.web.app import create_app
 
 
@@ -58,6 +60,7 @@ class FakeLocator:
     def __init__(self) -> None:
         self.clicked = False
         self.click_error: Exception | None = None
+        self.inner_text_error: Exception | None = None
         self.dom_clicked = False
 
     @property
@@ -81,6 +84,11 @@ class FakeLocator:
     async def evaluate(self, _script: str) -> bool:
         self.dom_clicked = True
         return True
+
+    async def inner_text(self, **_kwargs) -> str:
+        if self.inner_text_error is not None:
+            raise self.inner_text_error
+        return "  page   body  "
 
 
 class FakePage:
@@ -252,6 +260,22 @@ async def test_automation_client_uses_dom_click_after_actionability_timeout() ->
     assert await client.click('text="立即签到"') is True
     assert page.fake_locator.clicked is False
     assert page.fake_locator.dom_clicked is True
+
+
+@pytest.mark.asyncio
+async def test_automation_client_translates_only_playwright_body_timeouts() -> None:
+    page = FakePage()
+    page.fake_locator.inner_text_error = PlaywrightTimeoutError("body changed")
+    client = PlaywrightAutomationClient(page)
+
+    with pytest.raises(BrowserTransientReadError) as exc_info:
+        await client.body_text()
+
+    assert isinstance(exc_info.value.__cause__, PlaywrightTimeoutError)
+
+    page.fake_locator.inner_text_error = RuntimeError("unrelated read failure")
+    with pytest.raises(RuntimeError, match="unrelated read failure"):
+        await client.body_text()
 
 
 @pytest.mark.asyncio
