@@ -15,6 +15,7 @@ from autosign.core.browser_sessions import (
 )
 from autosign.core.config import Settings
 from autosign.core.security import SecretCipher
+from autosign.core.services.notifications import NotificationDelivery
 from autosign.plugins.vikacg import VikacgImportError, VikacgImportResult, VikacgPlugin
 from autosign.web.app import create_app
 
@@ -655,8 +656,53 @@ def test_uptime_channel_is_validated_encrypted_and_assignable(tmp_path: Path) ->
         assert renamed.status_code == 200
         assert renamed.json()["name"] == "Renamed Kuma"
 
+        changed_type = client.put(
+            f"/api/v1/notification-channels/{channel_id}",
+            json={
+                "name": "Wrong Type",
+                "channel_type": "napcat",
+                "base_url": "http://napcat.example:3000",
+                "access_token": "test-only-token",
+                "target_type": "group",
+                "target_id": "123456",
+            },
+        )
+        assert changed_type.status_code == 400
+
+        app.state.notifications.test = AsyncMock(
+            side_effect=[
+                NotificationDelivery(
+                    channel_id=channel_id,
+                    channel_name="Renamed Kuma",
+                    channel_type="uptime_kuma",
+                    success=False,
+                    message="temporary delivery failure",
+                ),
+                NotificationDelivery(
+                    channel_id=channel_id,
+                    channel_name="Renamed Kuma",
+                    channel_type="uptime_kuma",
+                    success=True,
+                    message="Uptime Kuma 已接受推送。",
+                ),
+            ]
+        )
+        failed_test = client.post(f"/api/v1/notification-channels/{channel_id}/test")
+        assert failed_test.status_code == 502
+        assert failed_test.json()["detail"] == "temporary delivery failure"
+        successful_test = client.post(
+            f"/api/v1/notification-channels/{channel_id}/test"
+        )
+        assert successful_test.status_code == 200
+        assert successful_test.json()["success"] is True
+
         assert client.delete(f"/api/v1/notification-channels/{channel_id}").status_code == 204
         assert client.get(f"/api/v1/accounts/{account_id}").json()["monitor_configured"] is False
+        assert client.delete("/api/v1/notification-channels/unknown").status_code == 404
+        assert client.put(
+            "/api/v1/accounts/unknown/notification-channels",
+            json={"channel_ids": []},
+        ).status_code == 404
 
 
 def test_napcat_channel_is_encrypted_reusable_and_unassignable(tmp_path: Path) -> None:

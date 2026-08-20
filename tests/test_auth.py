@@ -38,6 +38,7 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
         assert client.get("/api/v1/backups/status").status_code == 401
         assert client.get("/api/v1/system/status").status_code == 401
         assert client.get("/api/v1/executions").status_code == 401
+        assert client.get("/api/v1/notification-channels").status_code == 401
         assert client.get("/assets/vikacg-recovery.js").status_code == 401
 
         setup = client.post(
@@ -52,6 +53,11 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
 
         backup_without_csrf = client.post("/api/v1/backups/run", json={})
         assert backup_without_csrf.status_code == 403
+        notification_without_csrf = client.post(
+            "/api/v1/notification-channels",
+            json={},
+        )
+        assert notification_without_csrf.status_code == 403
 
         paste_without_csrf = client.post(
             "/api/v1/browser-sessions/unknown/type",
