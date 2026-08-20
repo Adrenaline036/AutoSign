@@ -94,6 +94,7 @@ def settings_for_test(data_dir: Path, key: str | None = None) -> Settings:
 def test_health_and_plugin_execution(tmp_path: Path) -> None:
     with TestClient(create_app(settings_for_test(tmp_path))) as client:
         dashboard = client.get("/")
+        vikacg_recovery_script = client.get("/assets/vikacg-recovery.js")
         health = client.get("/healthz")
         plugins = client.get("/api/v1/plugins")
         system_status = client.get("/api/v1/system/status")
@@ -111,7 +112,13 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert 'id="vikacg-import-value" class="secret-json-input" maxlength="65536"' in dashboard.text
     assert 'type="password" autocomplete="off"' in dashboard.text
     assert 'isVikacg ? "登录与恢复" : "交互登录"' in dashboard.text
-    assert "/vikacg-state-import" in dashboard.text
+    assert '<script src="/assets/vikacg-recovery.js"></script>' in dashboard.text
+    assert "vikacgRecovery.open(account)" in dashboard.text
+    assert vikacg_recovery_script.status_code == 200
+    assert vikacg_recovery_script.headers["cache-control"] == "no-store"
+    assert "window.createVikacgRecovery" in vikacg_recovery_script.text
+    assert "/vikacg-state-import" in vikacg_recovery_script.text
+    assert "confirm_overwrite: importConfirmed" in vikacg_recovery_script.text
     assert '<dialog id="execution-detail-dialog"' in dashboard.text
     assert '<dialog id="force-browser-save-dialog"' in dashboard.text
     assert '<dialog id="schedule-dialog"' in dashboard.text

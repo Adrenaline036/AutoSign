@@ -638,6 +638,7 @@
       </div>
     </dialog>
 
+    <script src="/assets/vikacg-recovery.js"></script>
     <script>
       const state = {
         plugins: [],
@@ -682,14 +683,6 @@
       const channelAssignmentForm = document.querySelector("#channel-assignment-form");
       const channelAssignmentList = document.querySelector("#channel-assignment-list");
       const deleteChannelDialog = document.querySelector("#delete-channel-dialog");
-      const vikacgRecoveryDialog = document.querySelector("#vikacg-recovery-dialog");
-      const vikacgRecoveryAccount = document.querySelector("#vikacg-recovery-account");
-      const vikacgImportDialog = document.querySelector("#vikacg-import-dialog");
-      const vikacgImportAccount = document.querySelector("#vikacg-import-account");
-      const vikacgImportForm = document.querySelector("#vikacg-import-form");
-      const vikacgImportValue = document.querySelector("#vikacg-import-value");
-      const vikacgImportError = document.querySelector("#vikacg-import-error");
-      const vikacgImportSubmit = document.querySelector("#vikacg-import-submit");
       const browserDialog = document.querySelector("#browser-login-dialog");
       const browserDialogAccount = document.querySelector("#browser-dialog-account");
       const browserPageTitle = document.querySelector("#browser-page-title");
@@ -704,9 +697,6 @@
       let editingChannelId = null;
       let assignmentAccountId = null;
       let deletingChannelId = null;
-      let vikacgRecoveryTarget = null;
-      let vikacgImportTarget = null;
-      let vikacgImportConfirmed = false;
       let activeBrowserSession = null;
       let browserPollTimer = null;
       let browserClosing = false;
@@ -751,6 +741,13 @@
         if (response.status === 204) return null;
         return response.json();
       }
+
+      const vikacgRecovery = window.createVikacgRecovery({
+        api,
+        loadAccounts,
+        openBrowserLogin,
+        showNotice
+      });
 
       function element(tag, className, text) {
         const node = document.createElement(tag);
@@ -816,24 +813,6 @@
       function supportsInteractiveLogin(account) {
         const plugin = pluginForAccount(account);
         return Boolean(plugin && plugin.capabilities.includes("interactive_login"));
-      }
-
-      function resetVikacgImport() {
-        vikacgImportForm.reset();
-        vikacgImportValue.disabled = false;
-        vikacgImportValue.type = "password";
-        document.querySelector("#vikacg-import-toggle").textContent = "显示内容";
-        vikacgImportError.textContent = "";
-        vikacgImportConfirmed = false;
-        vikacgImportSubmit.textContent = "验证导入内容";
-        vikacgImportSubmit.disabled = false;
-      }
-
-      function openVikacgRecovery(account) {
-        vikacgRecoveryTarget = account;
-        resetVikacgImport();
-        vikacgRecoveryAccount.textContent = `账户：${account.label}`;
-        vikacgRecoveryDialog.showModal();
       }
 
       function scheduleBrowserStatusRefresh(delay = 2000) {
@@ -1025,7 +1004,7 @@
             );
             login.addEventListener(
               "click",
-              () => isVikacg ? openVikacgRecovery(account) : openBrowserLogin(account)
+              () => isVikacg ? vikacgRecovery.open(account) : openBrowserLogin(account)
             );
             actions.append(login);
           }
@@ -1632,93 +1611,6 @@
       deleteChannelDialog.addEventListener("close", () => {
         deletingChannelId = null;
         document.querySelector("#delete-channel-name").textContent = "";
-      });
-
-      document.querySelector("#vikacg-recovery-close").addEventListener(
-        "click", () => vikacgRecoveryDialog.close()
-      );
-      document.querySelector("#vikacg-open-browser").addEventListener("click", () => {
-        const account = vikacgRecoveryTarget;
-        vikacgRecoveryDialog.close();
-        if (account) openBrowserLogin(account);
-      });
-      document.querySelector("#vikacg-show-import").addEventListener("click", () => {
-        const account = vikacgRecoveryTarget;
-        if (!account) return;
-        vikacgImportTarget = account;
-        resetVikacgImport();
-        vikacgImportAccount.textContent = `账户：${account.label}`;
-        if (!account.secret_names.includes("browser_storage_state")) {
-          vikacgImportError.textContent = "此账户还没有基础登录状态，请先完成一次实时浏览器登录。";
-          vikacgImportValue.disabled = true;
-          vikacgImportSubmit.disabled = true;
-        }
-        vikacgRecoveryDialog.close();
-        vikacgImportDialog.showModal();
-        window.setTimeout(() => vikacgImportValue.focus(), 0);
-      });
-      document.querySelector("#vikacg-import-toggle").addEventListener("click", (event) => {
-        const showing = vikacgImportValue.type === "text";
-        vikacgImportValue.type = showing ? "password" : "text";
-        event.currentTarget.textContent = showing ? "显示内容" : "隐藏内容";
-      });
-      document.querySelector("#vikacg-import-close").addEventListener(
-        "click", () => vikacgImportDialog.close()
-      );
-      document.querySelector("#vikacg-import-cancel").addEventListener(
-        "click", () => vikacgImportDialog.close()
-      );
-      vikacgImportForm.addEventListener("submit", async (event) => {
-        event.preventDefault();
-        if (!vikacgImportTarget || !vikacgImportValue.value) return;
-        vikacgImportError.textContent = "";
-        vikacgImportSubmit.disabled = true;
-        try {
-          const result = await api(
-            `/api/v1/accounts/${vikacgImportTarget.id}/vikacg-state-import`,
-            {
-              method: "POST",
-              body: JSON.stringify({
-                raw_json: vikacgImportValue.value,
-                confirm_overwrite: vikacgImportConfirmed
-              })
-            }
-          );
-          vikacgImportValue.value = "";
-          vikacgImportDialog.close();
-          await loadAccounts();
-          showNotice(
-            result.token_refreshed
-              ? "VikACG 登录状态已刷新、验证并加密保存"
-              : "VikACG 登录状态已验证并加密保存"
-          );
-        } catch (error) {
-          if (error.status === 409 && !vikacgImportConfirmed) {
-            vikacgImportConfirmed = true;
-            vikacgImportError.textContent =
-              "即将覆盖此账户当前保存的 VikACG 令牌。请再次点击确认；验证失败时旧状态不会改变。";
-            vikacgImportSubmit.textContent = "确认覆盖并验证";
-          } else {
-            vikacgImportError.textContent = error.message;
-          }
-        } finally {
-          vikacgImportSubmit.disabled = false;
-        }
-      });
-      vikacgRecoveryDialog.addEventListener("cancel", (event) => {
-        event.preventDefault();
-        vikacgRecoveryDialog.close();
-      });
-      vikacgRecoveryDialog.addEventListener("close", () => {
-        vikacgRecoveryTarget = null;
-      });
-      vikacgImportDialog.addEventListener("cancel", (event) => {
-        event.preventDefault();
-        vikacgImportDialog.close();
-      });
-      vikacgImportDialog.addEventListener("close", () => {
-        resetVikacgImport();
-        vikacgImportTarget = null;
       });
 
       browserLiveOpen.addEventListener("click", openLiveBrowserWindow);

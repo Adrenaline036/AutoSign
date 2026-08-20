@@ -36,6 +36,7 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
         assert first_status.headers["vary"] == "Cookie"
         assert client.get("/api/v1/accounts").status_code == 401
         assert client.get("/api/v1/system/status").status_code == 401
+        assert client.get("/assets/vikacg-recovery.js").status_code == 401
 
         setup = client.post(
             "/api/v1/auth/setup",
@@ -56,6 +57,17 @@ def test_first_run_setup_login_csrf_and_logout(tmp_path: Path, caplog) -> None:
             "/api/v1/browser-sessions/unknown/activity",
         )
         assert activity_without_csrf.status_code == 403
+        recovery_without_csrf = client.post(
+            "/api/v1/accounts/unknown/vikacg-state-import",
+            json={"raw_json": "{}", "confirm_overwrite": False},
+        )
+        assert recovery_without_csrf.status_code == 403
+        recovery_unknown_account = client.post(
+            "/api/v1/accounts/unknown/vikacg-state-import",
+            headers={"X-AutoSign-CSRF": csrf_token},
+            json={"raw_json": "{}", "confirm_overwrite": False},
+        )
+        assert recovery_unknown_account.status_code == 404
         paste_unknown_session = client.post(
             "/api/v1/browser-sessions/unknown/type",
             headers={"X-AutoSign-CSRF": csrf_token},
