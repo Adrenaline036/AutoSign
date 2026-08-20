@@ -1372,30 +1372,36 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         stored = client.app.state.vault.get(account["id"], BROWSER_STATE_SECRET)
         assert '"value":"state"' in stored
 
-        restored = client.post(f"/api/v1/accounts/{account['id']}/browser-session")
-        assert restored.status_code == 200
-        assert browser_manager.started_storage_states[-1] == stored
+        clean_default = client.post(f"/api/v1/accounts/{account['id']}/browser-session")
+        assert clean_default.status_code == 200
+        assert browser_manager.started_storage_states[-1] is None
         client.post(
-            f"/api/v1/browser-sessions/{restored.json()['id']}/close",
+            f"/api/v1/browser-sessions/{clean_default.json()['id']}/close",
             json={"save_state": False},
         )
 
-        clean = client.post(
-            f"/api/v1/accounts/{account['id']}/browser-session?clean=true"
+        deprecated_false = client.post(
+            f"/api/v1/accounts/{account['id']}/browser-session?clean=false"
         )
-        assert clean.status_code == 200
+        assert deprecated_false.status_code == 200
         assert browser_manager.started_storage_states[-1] is None
         client.post(
-            f"/api/v1/browser-sessions/{clean.json()['id']}/close",
+            f"/api/v1/browser-sessions/{deprecated_false.json()['id']}/close",
             json={"save_state": False},
         )
+
+        browser_parameters = client.get("/openapi.json").json()["paths"][
+            "/api/v1/accounts/{account_id}/browser-session"
+        ]["post"]["parameters"]
+        clean_parameter = next(item for item in browser_parameters if item["name"] == "clean")
+        assert clean_parameter["deprecated"] is True
 
         vikacg_account = client.post(
             "/api/v1/accounts",
             json={"plugin_id": "vikacg", "label": "VikACG 登录入口测试"},
         ).json()
         vikacg_session = client.post(
-            f"/api/v1/accounts/{vikacg_account['id']}/browser-session?clean=true"
+            f"/api/v1/accounts/{vikacg_account['id']}/browser-session"
         )
         assert vikacg_session.status_code == 200
         assert browser_manager.started_login_urls[-1] == (

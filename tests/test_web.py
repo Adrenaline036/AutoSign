@@ -97,10 +97,11 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
         health = client.get("/healthz")
         plugins = client.get("/api/v1/plugins")
         system_status = client.get("/api/v1/system/status")
-        execution = client.post(
-            "/api/v1/plugins/demo/execute",
-            json={"account_id": "a1", "account_label": "Test", "settings": {"reward": 5}},
-        )
+        account = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "Test", "settings": {"reward": 5}},
+        ).json()
+        execution = client.post(f"/api/v1/accounts/{account['id']}/execute")
 
     assert dashboard.status_code == 200
     assert '<dialog id="secret-dialog"' not in dashboard.text
@@ -122,8 +123,16 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert 'element("section", "channel-assignment-column")' in dashboard.text
     assert '<dialog id="delete-channel-dialog"' in dashboard.text
     assert 'id="channel-create"' in dashboard.text
-    assert 'id="demo-test"' in dashboard.text
-    assert 'id="history-clear"' in dashboard.text
+    assert 'id="demo-test"' not in dashboard.text
+    assert 'id="history-clear"' not in dashboard.text
+    assert "seenExecutionIds" not in dashboard.text
+    assert "historyMode" not in dashboard.text
+    assert "loadNewExecutions" not in dashboard.text
+    assert 'badges.append(loginBadge(account.secret_names.includes("browser_storage_state")))' in (
+        dashboard.text
+    )
+    assert 'statusBadge("Uptime Kuma", account.monitor_configured)' in dashboard.text
+    assert 'statusBadge("QQ通知", account.napcat_configured)' in dashboard.text
     assert 'id="notification-channels"' in dashboard.text
     assert 'id="backup-summary"' in dashboard.text
     assert 'id="backup-run"' in dashboard.text
@@ -394,10 +403,10 @@ def test_backup_status_and_manual_actions(tmp_path: Path, monkeypatch) -> None:
     assert checked.json()["success"] is True
 
 
-def test_unknown_plugin_returns_404(tmp_path: Path) -> None:
+def test_direct_plugin_execution_endpoint_is_removed(tmp_path: Path) -> None:
     with TestClient(create_app(settings_for_test(tmp_path))) as client:
         response = client.post(
-            "/api/v1/plugins/missing/execute",
+            "/api/v1/plugins/demo/execute",
             json={"account_id": "a1", "account_label": "Test"},
         )
 

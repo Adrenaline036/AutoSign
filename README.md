@@ -230,6 +230,8 @@ docker exec -it autosign python -m autosign restore /data/backups/<backup>.asbac
 
 数据库迁移会在容器启动时自动执行。不要通过删除数据库或重新生成主密钥来解决升级问题。
 
+管理页的 Demo 测试统一使用“创建 Demo 账户 → 执行账户签到”，不再提供绕过账户记录、通知和生命周期门的 `/api/v1/plugins/{plugin_id}/execute` 直执行接口；API 调用者应改用 `POST /api/v1/accounts/{account_id}/execute`。交互登录现在始终从干净会话开始，旧 `clean` query 参数已弃用并被忽略；保存状态只会在自动签到时恢复。
+
 通知渠道迁移只在首次需要时扫描旧账户秘密，成功后记录完成状态，后续启动不再重复扫描。如果从早期内部版本升级后发现 Uptime Kuma 或 NapCat 渠道缺失，应先停止正式服务并校验备份，再执行一次显式修复：
 
 ```powershell

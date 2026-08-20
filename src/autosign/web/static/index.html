@@ -219,7 +219,6 @@
           <h1>AutoSign</h1>
         </div>
         <div class="header-actions">
-          <button id="demo-test" class="secondary" type="button">Demo 签到测试</button>
           <button id="logout" class="secondary" type="button">退出管理页面</button>
         </div>
       </header>
@@ -241,16 +240,10 @@
       <section class="panel">
         <div class="section-heading">
           <h2>最近签到记录</h2>
-          <div class="header-actions">
-            <button id="history-refresh" class="success-action button-icon" type="button">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66"/><path d="M20 4v7h-7"/></svg>
-              刷新
-            </button>
-            <button id="history-clear" class="danger button-icon" type="button">
-              <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 6h18"/><path d="M8 6V4h8v2"/><path d="m19 6-1 14H6L5 6"/><path d="M10 11v5M14 11v5"/></svg>
-              清空
-            </button>
-          </div>
+          <button id="history-refresh" class="success-action button-icon" type="button">
+            <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 11a8 8 0 1 0-2.34 5.66"/><path d="M20 4v7h-7"/></svg>
+            刷新
+          </button>
         </div>
         <div id="execution-history" class="history-list"></div>
       </section>
@@ -653,9 +646,7 @@
         schedules: [],
         notificationChannels: [],
         backupStatus: null,
-        systemStatus: null,
-        seenExecutionIds: new Set(),
-        historyMode: "initial"
+        systemStatus: null
       };
       let csrfToken = null;
       const pluginSelect = document.querySelector("#plugin-select");
@@ -912,7 +903,7 @@
         browserDialog.showModal();
         try {
           activeBrowserSession = await api(
-            `/api/v1/accounts/${account.id}/browser-session?clean=true`,
+            `/api/v1/accounts/${account.id}/browser-session`,
             {method: "POST", body: "{}"}
           );
           showBrowserInteractionMode();
@@ -1002,9 +993,11 @@
             account.enabled ? "已启用" : "已禁用");
           const meta = element("div", "meta", `${account.plugin_id} · ${account.id}`);
           const badges = element("div", "status-badges");
+          badges.append(status);
+          if (supportsInteractiveLogin(account)) {
+            badges.append(loginBadge(account.secret_names.includes("browser_storage_state")));
+          }
           badges.append(
-            status,
-            loginBadge(account.secret_names.includes("browser_storage_state")),
             statusBadge("Uptime Kuma", account.monitor_configured),
             statusBadge("QQ通知", account.napcat_configured)
           );
@@ -1046,7 +1039,7 @@
                 body: "{}"
               });
               showNotice(`${result.message}；验证：${result.verified ? "通过" : "未通过"}`);
-              await loadNewExecutions();
+              await loadExecutions();
             } catch (error) {
               showNotice(error.message, true);
             } finally {
@@ -1371,11 +1364,8 @@
 
       function renderExecutions() {
         if (!state.executions.length) {
-          const emptyMessage = state.historyMode === "initial"
-            ? "还没有签到记录。点击账户卡片中的“执行账户签到”开始测试。"
-            : "暂无新签到记录。";
           historyContainer.replaceChildren(
-            element("p", "muted", emptyMessage)
+            element("p", "muted", "还没有签到记录。点击账户卡片中的“执行账户签到”开始测试。")
           );
           return;
         }
@@ -1400,20 +1390,9 @@
         }));
       }
 
-      async function loadNewExecutions() {
-        const latest = await api("/api/v1/executions?limit=6");
-        const newRecords = latest.filter(
-          (record) => !state.seenExecutionIds.has(record.id)
-        );
-        if (newRecords.length) {
-          const merged = [...newRecords, ...state.executions];
-          state.executions = merged.filter(
-            (record, index) => merged.findIndex((item) => item.id === record.id) === index
-          ).slice(0, 6);
-        }
-        latest.forEach((record) => state.seenExecutionIds.add(record.id));
+      async function loadExecutions() {
+        state.executions = await api("/api/v1/executions?limit=6");
         renderExecutions();
-        return newRecords.length;
       }
 
       document.querySelector("#account-form").addEventListener("submit", async (event) => {
@@ -1766,33 +1745,11 @@
         } catch (error) { showNotice(error.message, true); }
       });
 
-      document.querySelector("#demo-test").addEventListener("click", async (event) => {
-        const button = event.currentTarget;
-        button.disabled = true;
-        try {
-          const result = await api("/api/v1/plugins/demo/execute", {
-            method: "POST",
-            body: JSON.stringify({settings: {reward: 3}})
-          });
-          showNotice(`${result.message}；验证：${result.verified ? "通过" : "未通过"}`);
-        } catch (error) {
-          showNotice(error.message, true);
-        } finally {
-          button.disabled = false;
-        }
-      });
       document.querySelector("#history-refresh").addEventListener("click", async () => {
         try {
-          const newCount = await loadNewExecutions();
-          showNotice(newCount ? `发现 ${newCount} 条新签到记录` : "暂无新签到记录");
+          await loadExecutions();
+          showNotice("已刷新最近签到记录");
         } catch (error) { showNotice(error.message, true); }
-      });
-      document.querySelector("#history-clear").addEventListener("click", () => {
-        state.executions.forEach((record) => state.seenExecutionIds.add(record.id));
-        state.executions = [];
-        state.historyMode = "incremental";
-        renderExecutions();
-        showNotice("已清空当前显示；实际签到日志仍保留");
       });
       document.querySelector("#backup-settings").addEventListener("click", openBackupSettings);
       document.querySelector("#backup-settings-close").addEventListener(
@@ -1928,7 +1885,6 @@
           state.plugins = plugins;
           state.accounts = accounts;
           state.executions = executions;
-          executions.forEach((record) => state.seenExecutionIds.add(record.id));
           state.schedules = schedules;
           state.notificationChannels = notificationChannels;
           state.backupStatus = backupStatus;

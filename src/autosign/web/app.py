@@ -4,13 +4,11 @@ import asyncio
 from contextlib import asynccontextmanager, suppress
 from datetime import UTC, datetime
 from pathlib import Path
-from typing import Any
 from urllib.parse import urljoin, urlparse
 
 from fastapi import FastAPI, HTTPException, Query, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, JSONResponse, Response
 from fastapi.staticfiles import StaticFiles
-from pydantic import BaseModel, Field
 
 from autosign import __version__
 from autosign.core.account_operations import (
@@ -91,12 +89,6 @@ from autosign.web.schemas import (
 )
 
 STATIC_DIR = Path(__file__).with_name("static")
-
-
-class SignExecutionRequest(BaseModel):
-    account_id: str = Field(default="demo-account", min_length=1, max_length=100)
-    account_label: str = Field(default="演示账户", min_length=1, max_length=100)
-    settings: dict[str, Any] = Field(default_factory=dict)
 
 
 def create_app(
@@ -787,9 +779,13 @@ def create_app(
     async def start_browser_session(
         account_id: str,
         request: Request,
-        clean: bool = Query(
-            False,
-            description="Start without restoring the account's saved browser state.",
+        clean: bool | None = Query(
+            None,
+            deprecated=True,
+            description=(
+                "Deprecated and ignored. Interactive login always starts clean; "
+                "saved state is restored only for automated execution."
+            ),
         ),
     ) -> BrowserSessionRead:
         try:
@@ -814,14 +810,11 @@ def create_app(
             )
         else:
             login_url = urljoin(str(request.base_url), manifest.login_url)
-        storage_state_json = None
-        if not clean and BROWSER_STATE_SECRET in vault.list_names(account.id):
-            storage_state_json = vault.get(account.id, BROWSER_STATE_SECRET)
         try:
             info = await browser_sessions.start(
                 account_id=account.id,
                 login_url=login_url,
-                storage_state_json=storage_state_json,
+                storage_state_json=None,
             )
             return serialize_browser_session(info)
         except Exception as exc:
@@ -1184,17 +1177,5 @@ def create_app(
             )
             for record in executions.list(account_id=account_id, limit=limit)
         ]
-
-    @app.post("/api/v1/plugins/{plugin_id}/execute", response_model=SignResult)
-    async def execute_plugin(plugin_id: str, request: SignExecutionRequest) -> SignResult:
-        try:
-            return await runner.execute(
-                plugin_id,
-                account_id=request.account_id,
-                account_label=request.account_label,
-                settings=request.settings,
-            )
-        except LookupError as exc:
-            raise HTTPException(status_code=404, detail=str(exc)) from exc
 
     return app
