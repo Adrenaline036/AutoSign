@@ -415,6 +415,8 @@ class BrowserSessionInfo:
 
 
 class BrowserSessionManager:
+    supports_screenshot_interaction = True
+
     def __init__(
         self,
         timeout_seconds: int = 900,
@@ -1083,6 +1085,8 @@ class DeferredChromeSession:
 
 class DeferredChromeBrowserSessionManager(BrowserSessionManager):
     """Launch ordinary Chrome first and attach Playwright only after user login."""
+
+    supports_screenshot_interaction = False
 
     def __init__(
         self,

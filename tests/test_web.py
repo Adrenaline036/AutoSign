@@ -215,6 +215,8 @@ def test_local_preview_remote_browser_is_a_separate_interactive_page() -> None:
     ).read_text(encoding="utf-8")
 
     assert "AutoSign 独立登录浏览器" in remote_browser
+    assert 'id="compatibility-warning"' in remote_browser
+    assert "截图轮询登录是已弃用的兼容模式" in remote_browser
     assert 'id="screen"' in remote_browser
     assert 'id="keyboard" type="text"' in remote_browser
     assert 'id="paste-input" type="password"' in remote_browser
@@ -241,6 +243,7 @@ def test_native_executable_selects_deferred_chrome_manager(tmp_path: Path) -> No
         app.state.browser_sessions,
         DeferredChromeBrowserSessionManager,
     )
+    assert app.state.browser_supports_screenshot_interaction is False
 
 
 def test_docker_nas_uses_deferred_chromium_for_interactive_login() -> None:

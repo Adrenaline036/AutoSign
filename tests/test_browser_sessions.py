@@ -1243,6 +1243,8 @@ async def test_closed_browser_target_is_discarded_with_reopen_message() -> None:
 
 
 class FakeApiBrowserManager:
+    supports_screenshot_interaction = True
+
     def __init__(self) -> None:
         now = datetime.now(UTC)
         self.info = BrowserSessionInfo(
@@ -1259,6 +1261,7 @@ class FakeApiBrowserManager:
         self.started_login_urls: list[str] = []
         self.activity_calls = 0
         self.focus_calls = 0
+        self.screenshot_compatibility_calls: list[str] = []
 
     async def start(
         self,
@@ -1290,6 +1293,7 @@ class FakeApiBrowserManager:
         return 0
 
     async def screenshot(self, _session_id: str) -> bytes:
+        self.screenshot_compatibility_calls.append("screenshot")
         return b"fake-png"
 
     async def mark_activity(self, _session_id: str) -> None:
@@ -1304,13 +1308,13 @@ class FakeApiBrowserManager:
         )
 
     async def click(self, _session_id: str, **_kwargs) -> None:
-        pass
+        self.screenshot_compatibility_calls.append("click")
 
     async def type_text(self, _session_id: str, **_kwargs) -> None:
-        pass
+        self.screenshot_compatibility_calls.append("type")
 
     async def press_key(self, _session_id: str, **_kwargs) -> None:
-        pass
+        self.screenshot_compatibility_calls.append("press")
 
     async def login_is_complete(self, _session_id: str, **_kwargs) -> bool:
         return self.login_complete
@@ -1395,6 +1399,14 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         ]["post"]["parameters"]
         clean_parameter = next(item for item in browser_parameters if item["name"] == "clean")
         assert clean_parameter["deprecated"] is True
+        openapi_paths = client.get("/openapi.json").json()["paths"]
+        for path, method in (
+            ("/api/v1/browser-sessions/{session_id}/screenshot", "get"),
+            ("/api/v1/browser-sessions/{session_id}/click", "post"),
+            ("/api/v1/browser-sessions/{session_id}/type", "post"),
+            ("/api/v1/browser-sessions/{session_id}/press", "post"),
+        ):
+            assert openapi_paths[path][method]["deprecated"] is True
 
         vikacg_account = client.post(
             "/api/v1/accounts",
@@ -1433,6 +1445,74 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         assert forced.json()["saved"] is True
         assert forced.json()["verified"] is False
         assert BROWSER_STATE_SECRET in forced.json()["secret_names"]
+
+
+def test_deferred_transport_rejects_screenshot_compatibility_api(tmp_path: Path) -> None:
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(SecretCipher.generate_key()),
+        auth_disabled=True,
+        browser_native_window=True,
+    )
+    browser_manager = FakeApiBrowserManager()
+    browser_manager.supports_screenshot_interaction = False
+    app = create_app(settings, browser_manager_override=browser_manager)
+
+    with TestClient(app) as client:
+        account = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "Deferred 能力边界"},
+        ).json()
+        started = client.post(f"/api/v1/accounts/{account['id']}/browser-session")
+        assert started.status_code == 200
+        assert started.json()["live_url"] is None
+        session_id = started.json()["id"]
+
+        requests = (
+            ("GET", "screenshot", None),
+            ("POST", "click", {"x": 10, "y": 10}),
+            ("POST", "type", {"text": "ignored"}),
+            ("POST", "press", {"key": "Enter"}),
+        )
+        for method, action, body in requests:
+            response = client.request(
+                method,
+                f"/api/v1/browser-sessions/{session_id}/{action}",
+                json=body,
+            )
+            assert response.status_code == 409
+            assert "unavailable" in response.json()["detail"]
+        live_page = client.get(f"/browser-sessions/{session_id}/live")
+        assert live_page.status_code == 409
+        assert browser_manager.screenshot_compatibility_calls == []
+
+
+def test_deferred_transport_requires_an_interactive_surface(tmp_path: Path) -> None:
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(SecretCipher.generate_key()),
+        auth_disabled=True,
+        browser_native_executable=tmp_path / "chrome.exe",
+    )
+
+    with pytest.raises(RuntimeError, match="Deferred Chrome interactive login requires"):
+        create_app(settings)
+    assert not (tmp_path / "browser-login-profiles").exists()
+
+
+def test_native_window_requires_a_configured_executable(tmp_path: Path) -> None:
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(SecretCipher.generate_key()),
+        auth_disabled=True,
+        browser_native_window=True,
+    )
+
+    with pytest.raises(RuntimeError, match="NATIVE_EXECUTABLE"):
+        create_app(settings)
 
 
 def test_native_browser_session_uses_visible_system_window_contract(tmp_path: Path) -> None:

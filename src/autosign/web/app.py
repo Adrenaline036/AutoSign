@@ -125,6 +125,27 @@ def create_app(
         "automation_capacity": settings.browser_automation_capacity,
         "interactive_capacity": settings.browser_interactive_capacity,
     }
+    deferred_transport_error = (
+        "Deferred Chrome interactive login requires either "
+        "AUTOSIGN_BROWSER_LIVE_ENABLED=true or "
+        "AUTOSIGN_BROWSER_NATIVE_WINDOW=true."
+    )
+    if (
+        browser_manager_override is None
+        and settings.browser_native_window
+        and settings.browser_native_executable is None
+    ):
+        raise RuntimeError(
+            "AUTOSIGN_BROWSER_NATIVE_WINDOW=true requires "
+            "AUTOSIGN_BROWSER_NATIVE_EXECUTABLE."
+        )
+    if (
+        browser_manager_override is None
+        and settings.browser_native_executable is not None
+        and not settings.browser_live_enabled
+        and not settings.browser_native_window
+    ):
+        raise RuntimeError(deferred_transport_error)
     if browser_manager_override is not None:
         browser_sessions = browser_manager_override
     elif settings.browser_native_executable is not None:
@@ -135,6 +156,21 @@ def create_app(
         )
     else:
         browser_sessions = BrowserSessionManager(**browser_options)
+    supports_screenshot_interaction = getattr(
+        browser_sessions,
+        "supports_screenshot_interaction",
+        True,
+    )
+    if (
+        browser_manager_override is not None
+        and not supports_screenshot_interaction
+        and not settings.browser_live_enabled
+        and not settings.browser_native_window
+    ):
+        raise RuntimeError(deferred_transport_error)
+    screenshot_interaction_enabled = (
+        supports_screenshot_interaction and not settings.browser_live_enabled
+    )
     browser_cleanup = BrowserSessionCleanupCoordinator(
         browser_sessions,
         poll_seconds=settings.browser_session_cleanup_poll_seconds,
@@ -272,6 +308,7 @@ def create_app(
     app.state.vault = vault
     app.state.auth = auth
     app.state.browser_sessions = browser_sessions
+    app.state.browser_supports_screenshot_interaction = supports_screenshot_interaction
     app.state.browser_cleanup = browser_cleanup
     app.state.executions = executions
     app.state.account_operations = account_operations
@@ -772,6 +809,16 @@ def create_app(
             detail=f"Browser operation failed safely: {type(exc).__name__}",
         )
 
+    def require_screenshot_interaction() -> None:
+        if not screenshot_interaction_enabled:
+            raise HTTPException(
+                status_code=409,
+                detail=(
+                    "Screenshot browser controls are unavailable for this interactive "
+                    "browser transport. Use the live noVNC or native Chrome window."
+                ),
+            )
+
     @app.post(
         "/api/v1/accounts/{account_id}/browser-session",
         response_model=BrowserSessionRead,
@@ -839,6 +886,8 @@ def create_app(
 
     @app.get("/browser-sessions/{session_id}/live", include_in_schema=False)
     async def live_browser(session_id: str) -> FileResponse:
+        if not settings.browser_live_enabled:
+            require_screenshot_interaction()
         try:
             await browser_sessions.focus(session_id)
         except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
@@ -864,6 +913,9 @@ def create_app(
         host = websocket.headers.get("host")
         if origin and host and urlparse(origin).netloc != host:
             await websocket.close(code=4403)
+            return
+        if not settings.browser_live_enabled:
+            await websocket.close(code=4404, reason="Live browser transport is disabled.")
             return
 
         try:
@@ -922,8 +974,9 @@ def create_app(
             with suppress(OSError):
                 await writer.wait_closed()
 
-    @app.get("/api/v1/browser-sessions/{session_id}/screenshot")
+    @app.get("/api/v1/browser-sessions/{session_id}/screenshot", deprecated=True)
     async def browser_screenshot(session_id: str) -> Response:
+        require_screenshot_interaction()
         try:
             image = await browser_sessions.screenshot(session_id)
             return Response(
@@ -941,22 +994,37 @@ def create_app(
         except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
             raise browser_error(exc) from exc
 
-    @app.post("/api/v1/browser-sessions/{session_id}/click", status_code=204)
+    @app.post(
+        "/api/v1/browser-sessions/{session_id}/click",
+        status_code=204,
+        deprecated=True,
+    )
     async def browser_click(session_id: str, request: BrowserClick) -> None:
+        require_screenshot_interaction()
         try:
             await browser_sessions.click(session_id, x=request.x, y=request.y)
         except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
             raise browser_error(exc) from exc
 
-    @app.post("/api/v1/browser-sessions/{session_id}/type", status_code=204)
+    @app.post(
+        "/api/v1/browser-sessions/{session_id}/type",
+        status_code=204,
+        deprecated=True,
+    )
     async def browser_type_text(session_id: str, request: BrowserTextInput) -> None:
+        require_screenshot_interaction()
         try:
             await browser_sessions.type_text(session_id, text=request.text)
         except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:
             raise browser_error(exc) from exc
 
-    @app.post("/api/v1/browser-sessions/{session_id}/press", status_code=204)
+    @app.post(
+        "/api/v1/browser-sessions/{session_id}/press",
+        status_code=204,
+        deprecated=True,
+    )
     async def browser_press_key(session_id: str, request: BrowserKeyInput) -> None:
+        require_screenshot_interaction()
         try:
             await browser_sessions.press_key(session_id, key=request.key)
         except (BrowserSessionNotFoundError, BrowserSessionInputError) as exc:

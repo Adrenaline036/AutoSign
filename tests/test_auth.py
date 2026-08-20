@@ -141,3 +141,25 @@ def test_live_browser_assets_and_websocket_require_admin_session(tmp_path: Path)
             ):
                 pass
         assert disconnected.value.code == 4401
+
+
+def test_vnc_websocket_is_unavailable_when_live_transport_is_disabled(
+    tmp_path: Path,
+) -> None:
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(SecretCipher.generate_key()),
+        auth_disabled=True,
+    )
+
+    with TestClient(create_app(settings)) as client:
+        with pytest.raises(WebSocketDisconnect) as disconnected:
+            with client.websocket_connect(
+                "/api/v1/browser-sessions/unknown/vnc",
+                headers={"origin": "http://testserver"},
+                subprotocols=["binary"],
+            ):
+                pass
+
+        assert disconnected.value.code == 4404

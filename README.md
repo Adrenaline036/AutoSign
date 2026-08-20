@@ -131,6 +131,8 @@ AutoSign 将以下浏览器状态合并保存：
 
 Docker 中的 Chromium 运行在虚拟显示环境。交互登录期间 Chromium 作为普通 X11 进程启动，Playwright 不参与启动或输入；只有用户点击“登录完成，检测并保存”后，AutoSign 才通过容器回环 CDP 接管并导出状态。原始 VNC 与 CDP 均只监听容器回环地址；noVNC 静态资源与 WebSocket 转发要求有效的管理员会话。无需映射 `5900` 或调试端口，也不应将其暴露到公网。
 
+未启用 noVNC 且未配置原生 Chrome 窗口时，AutoSign 仍保留截图轮询式交互登录兼容模式。该模式及其 `screenshot`/`click`/`type`/`press` API 已弃用，但本轮不会直接删除；新部署应使用官方 Compose 的 noVNC 实时浏览器，桌面开发则使用原生 Chrome 窗口。DeferredChrome 会话不会接受截图模式输入 API，错误配置会在启动时明确失败，而不是在登录途中返回“未知会话”。真正移除兼容模式前会保留公开弃用窗口并再次审查。
+
 粘贴文本通过现有的管理员会话和 CSRF 校验后写入当前聚焦的远端输入框。备用输入框默认隐藏内容；文本发送后立即清空，不写入 AutoSign 数据库，成功提示也只显示字符数。
 
 ## 配置
@@ -145,8 +147,9 @@ Docker 中的 Chromium 运行在虚拟显示环境。交互登录期间 Chromium
 | `AUTOSIGN_DATABASE_BUSY_TIMEOUT_MS` | `2000` | SQLite 写锁冲突最大等待毫秒数；不是固定请求延迟 |
 | `AUTOSIGN_BROWSER_HEADLESS` | `true` | 是否使用无界面 Chromium；Docker 示例使用虚拟显示下的 headful 模式 |
 | `AUTOSIGN_BROWSER_HIDE_WINDOW` | `false` | 桌面开发时将原生 headful 窗口移出屏幕 |
-| `AUTOSIGN_BROWSER_LIVE_ENABLED` | `false` | 启用 noVNC 实时登录；Docker 示例已开启 |
+| `AUTOSIGN_BROWSER_LIVE_ENABLED` | `false` | 启用 noVNC 实时登录；Docker 示例已开启；关闭且无原生 Chrome 时使用已弃用的截图兼容模式 |
 | `AUTOSIGN_BROWSER_NATIVE_EXECUTABLE` | 无 | 普通浏览器延迟接管入口；官方 Docker 示例指向镜像内固定 Chromium 启动器 |
+| `AUTOSIGN_BROWSER_NATIVE_WINDOW` | `false` | 桌面环境直接显示原生 Chrome 窗口；必须同时配置 `AUTOSIGN_BROWSER_NATIVE_EXECUTABLE` |
 | `AUTOSIGN_BROWSER_SESSION_TIMEOUT_SECONDS` | `900` | 交互登录会话最大闲置秒数 |
 | `AUTOSIGN_BROWSER_SESSION_CLEANUP_POLL_SECONDS` | `60` | 后台清理过期交互会话的轮询秒数 |
 | `AUTOSIGN_BROWSER_AUTOMATION_CAPACITY` | `2` | 同时执行的浏览器自动化操作上限；NAS 内存压力较高时可降为 `1` |
