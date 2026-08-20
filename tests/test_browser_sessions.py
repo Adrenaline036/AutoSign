@@ -5,6 +5,7 @@ import base64
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
@@ -1449,6 +1450,51 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         assert forced.json()["saved"] is True
         assert forced.json()["verified"] is False
         assert BROWSER_STATE_SECRET in forced.json()["secret_names"]
+
+
+def test_browser_router_preserves_safe_error_mapping(tmp_path: Path) -> None:
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(SecretCipher.generate_key()),
+        auth_disabled=True,
+    )
+    browser_manager = FakeApiBrowserManager()
+    app = create_app(settings, browser_manager_override=browser_manager)
+
+    with TestClient(app) as client:
+        unknown_account = client.post("/api/v1/accounts/unknown/browser-session")
+        assert unknown_account.status_code == 404
+
+        account_id = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "浏览器错误映射"},
+        ).json()["id"]
+        original_start = browser_manager.start
+        browser_manager.start = AsyncMock(
+            side_effect=RuntimeError("internal browser detail must stay hidden")
+        )
+        failed_start = client.post(
+            f"/api/v1/accounts/{account_id}/browser-session"
+        )
+        assert failed_start.status_code == 502
+        assert failed_start.json()["detail"] == (
+            "Browser operation failed safely: RuntimeError"
+        )
+
+        browser_manager.start = original_start
+        session_id = client.post(
+            f"/api/v1/accounts/{account_id}/browser-session"
+        ).json()["id"]
+        browser_manager.close = AsyncMock(
+            side_effect=BrowserStorageStateError("capture failed")
+        )
+        failed_close = client.post(
+            f"/api/v1/browser-sessions/{session_id}/close",
+            json={"save_state": True},
+        )
+        assert failed_close.status_code == 409
+        assert failed_close.json()["detail"] == "capture failed"
 
 
 def test_deferred_transport_rejects_screenshot_compatibility_api(tmp_path: Path) -> None:
