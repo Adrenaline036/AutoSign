@@ -29,6 +29,8 @@
       #loading { position: absolute; inset: 0; display: grid; place-items: center;
         color: #9eb0ca; pointer-events: none; }
       #loading[hidden] { display: none; }
+      #compatibility-warning { margin: 0; padding: 8px 14px; background: #3a2a0b;
+        border-bottom: 1px solid #76591c; color: #f4d889; font-size: 14px; }
       .error { color: #ffabb5 !important; }
     </style>
   </head>
@@ -44,6 +46,10 @@
       </div>
       <button id="close" type="button">完成操作，关闭本页</button>
     </header>
+    <p id="compatibility-warning">
+      截图轮询登录是已弃用的兼容模式。新部署请使用 noVNC 实时浏览器或本机原生
+      Chrome 窗口；本页在正式移除前继续可用。
+    </p>
     <div id="stage" tabindex="0" role="application" aria-label="AutoSign 远程浏览器画面">
       <img id="screen" alt="远程浏览器画面" draggable="false">
       <input id="keyboard" type="text" autocomplete="off" autocapitalize="off"

@@ -10,6 +10,7 @@ from sqlalchemy import delete, select
 from autosign.core.db import (
     Account,
     AccountNotificationChannel,
+    AppMetadata,
     Database,
     NotificationChannel,
 )
@@ -33,6 +34,8 @@ from autosign.plugin_sdk import SignResult, SignStatus
 UPTIME_KUMA = "uptime_kuma"
 NAPCAT = "napcat"
 CHANNEL_TYPES = {UPTIME_KUMA, NAPCAT}
+LEGACY_MIGRATION_KEY = "notification_channels_legacy_v1_complete"
+LEGACY_MIGRATION_COMPLETE = "complete"
 
 
 class NotificationChannelNotFoundError(LookupError):
@@ -263,7 +266,22 @@ class NotificationChannelService:
                 )
         return deliveries
 
-    def migrate_legacy(self, vault: VaultService) -> int:
+    def legacy_migration_complete(self) -> bool:
+        with self._database.session() as session:
+            record = session.get(AppMetadata, LEGACY_MIGRATION_KEY)
+            return record is not None and record.value == LEGACY_MIGRATION_COMPLETE
+
+    def migrate_legacy(self, vault: VaultService, *, force: bool = False) -> int:
+        if force:
+            self._clear_legacy_migration_marker()
+        elif self.legacy_migration_complete():
+            return 0
+
+        migrated = self._migrate_legacy_accounts(vault)
+        self._mark_legacy_migration_complete()
+        return migrated
+
+    def _migrate_legacy_accounts(self, vault: VaultService) -> int:
         migrated = 0
         with self._database.session() as session:
             accounts = list(session.scalars(select(Account).order_by(Account.created_at)))
@@ -307,10 +325,30 @@ class NotificationChannelService:
                 assigned_ids = [item.id for item in self.assigned_to_account(account.id)]
                 if channel.id not in assigned_ids:
                     self.assign(account.id, [*assigned_ids, channel.id])
-                for secret_name in secret_names:
-                    vault.delete(account.id, secret_name)
+                vault.delete_many(account.id, secret_names)
                 migrated += 1
         return migrated
+
+    def _mark_legacy_migration_complete(self) -> None:
+        with self._database.session() as session:
+            record = session.get(AppMetadata, LEGACY_MIGRATION_KEY)
+            if record is None:
+                session.add(
+                    AppMetadata(
+                        key=LEGACY_MIGRATION_KEY,
+                        value=LEGACY_MIGRATION_COMPLETE,
+                    )
+                )
+            else:
+                record.value = LEGACY_MIGRATION_COMPLETE
+            session.commit()
+
+    def _clear_legacy_migration_marker(self) -> None:
+        with self._database.session() as session:
+            session.execute(
+                delete(AppMetadata).where(AppMetadata.key == LEGACY_MIGRATION_KEY)
+            )
+            session.commit()
 
     def _find_matching(
         self,

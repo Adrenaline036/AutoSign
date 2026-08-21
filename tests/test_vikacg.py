@@ -5,7 +5,12 @@ import json
 import pytest
 from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
-from autosign.plugin_sdk import BrowserResponse, PluginContext, SignStatus
+from autosign.plugin_sdk import (
+    BrowserResponse,
+    BrowserTransientReadError,
+    PluginContext,
+    SignStatus,
+)
 from autosign.plugins.vikacg import VikacgImportError, VikacgPlugin
 
 
@@ -250,6 +255,37 @@ def test_vikacg_import_rejects_a_different_account() -> None:
         VikacgPlugin.prepare_imported_storage_state(_browser_state(), imported)
 
 
+def test_vikacg_account_selection_keeps_strict_and_lenient_modes() -> None:
+    cache = {
+        "accounts": [
+            {"id": 42, "token": "first-token"},
+            {"id": 42, "token": "second-token"},
+        ],
+        "currentID": 42,
+    }
+
+    matches = VikacgPlugin._matching_current_accounts(cache)
+
+    assert matches == cache["accounts"]
+    with pytest.raises(VikacgImportError, match="无法唯一确定"):
+        VikacgPlugin._select_current_account(cache, source="测试")
+
+
+@pytest.mark.asyncio
+async def test_vikacg_api_session_keeps_single_account_fallback() -> None:
+    storage = _api_storage()
+    cache = json.loads(storage[VikacgPlugin.ACCOUNT_STORAGE_KEY])
+    cache.pop("currentID")
+    storage[VikacgPlugin.ACCOUNT_STORAGE_KEY] = json.dumps(cache)
+
+    session = await VikacgPlugin()._load_api_session(
+        FakeVikacgBrowser(["unused"], storage=storage)
+    )
+
+    assert session is not None
+    assert session.token == "access-token"
+
+
 @pytest.mark.asyncio
 async def test_vikacg_import_validates_with_read_only_user_info() -> None:
     browser = FakeVikacgBrowser(
@@ -349,6 +385,9 @@ async def test_vikacg_refresh_only_import_does_not_reuse_the_old_access_token() 
     assert result.token_refreshed is True
     assert browser.api_requests[0][0] == VikacgPlugin.REFRESH_API_URL
     assert browser.api_requests[1][0] == VikacgPlugin.USER_INFO_API_URL
+    assert browser.api_requests[1][2]["Authorization"] == "Bearer fresh-token"
+    saved_cache = json.loads(browser.storage_writes[0][1])
+    assert saved_cache["accounts"][0]["refreshToken"] == "refresh-token"
 
 
 @pytest.mark.asyncio
@@ -376,6 +415,35 @@ async def test_vikacg_uses_site_api_without_loading_spa() -> None:
     assert browser.clicked_selectors == []
     assert browser.api_requests[0][2]["Authorization"] == "Bearer access-token"
     assert browser.api_requests[0][2]["X-Device-Code"] == "device-id"
+
+
+@pytest.mark.asyncio
+async def test_vikacg_selects_explicit_current_account_from_multiple_accounts() -> None:
+    storage = _api_storage()
+    cache = json.loads(storage[VikacgPlugin.ACCOUNT_STORAGE_KEY])
+    cache["accounts"].insert(
+        0,
+        {"id": 7, "token": "wrong-token", "refreshToken": "wrong-refresh"},
+    )
+    storage[VikacgPlugin.ACCOUNT_STORAGE_KEY] = json.dumps(cache)
+    browser = FakeVikacgBrowser(
+        ["unused"],
+        storage=storage,
+        api_responses=[
+            BrowserResponse(
+                status=200,
+                url=VikacgPlugin.MISSION_API_URL,
+                text='{"status":"success","code":200,"message":"签到成功"}',
+            )
+        ],
+    )
+
+    result = await VikacgPlugin().sign(
+        PluginContext(account_id="a1", account_label="VikACG", browser=browser)
+    )
+
+    assert result.status is SignStatus.SUCCESS
+    assert browser.api_requests[0][2]["Authorization"] == "Bearer access-token"
 
 
 @pytest.mark.asyncio
@@ -443,6 +511,64 @@ async def test_vikacg_refreshes_token_persists_state_and_retries() -> None:
     saved_cache = json.loads(browser.storage_writes[0][1])
     assert saved_cache["accounts"][0]["token"] == "new-token"
     assert saved_cache["accounts"][0]["refreshToken"] == "new-refresh"
+
+
+@pytest.mark.asyncio
+async def test_vikacg_refresh_rejects_success_without_a_new_access_token() -> None:
+    browser = FakeVikacgBrowser(
+        ["unused"],
+        storage=_api_storage(),
+        api_responses=[
+            BrowserResponse(
+                status=401,
+                url=VikacgPlugin.MISSION_API_URL,
+                text='{"status":"fail","code":401}',
+            ),
+            BrowserResponse(
+                status=200,
+                url=VikacgPlugin.REFRESH_API_URL,
+                text='{"status":"success","data":{"refreshToken":"rotated-only"}}',
+            ),
+        ],
+    )
+
+    result = await VikacgPlugin().sign(
+        PluginContext(account_id="a1", account_label="VikACG", browser=browser)
+    )
+
+    assert result.status is SignStatus.FAILED
+    assert result.details == {"stage": "refresh_token", "http_status": 200}
+    assert browser.storage_writes == []
+    assert browser.visited_urls == []
+
+
+@pytest.mark.asyncio
+async def test_vikacg_refresh_preserves_cloudflare_diagnostics() -> None:
+    browser = FakeVikacgBrowser(
+        ["unused"],
+        storage=_api_storage(),
+        api_responses=[
+            BrowserResponse(
+                status=401,
+                url=VikacgPlugin.MISSION_API_URL,
+                text='{"status":"fail","code":401}',
+            ),
+            BrowserResponse(
+                status=403,
+                url=VikacgPlugin.REFRESH_API_URL,
+                text='<html><div id="challenge-platform">blocked</div></html>',
+            ),
+        ],
+    )
+
+    result = await VikacgPlugin().sign(
+        PluginContext(account_id="a1", account_label="VikACG", browser=browser)
+    )
+
+    assert result.status is SignStatus.FAILED
+    assert result.details["stage"] == "cloudflare_challenge"
+    assert result.details["http_status"] == 403
+    assert browser.storage_writes == []
 
 
 @pytest.mark.asyncio
@@ -629,8 +755,8 @@ async def test_vikacg_rejects_unrecognized_page(monkeypatch) -> None:
 @pytest.mark.asyncio
 async def test_vikacg_tolerates_transient_body_timeouts(monkeypatch) -> None:
     monkeypatch.setattr("autosign.plugins.vikacg.asyncio.sleep", _no_sleep)
-    body_timeout = PlaywrightTimeoutError(
-        'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
+    body_timeout = BrowserTransientReadError(
+        "The page replaced its body before it could be read."
     )
     browser = FakeVikacgBrowser(
         [
@@ -654,8 +780,8 @@ async def test_vikacg_reports_repeated_body_timeouts_as_load_failure(monkeypatch
     monkeypatch.setattr("autosign.plugins.vikacg.asyncio.sleep", _no_sleep)
     browser = FakeVikacgBrowser(
         [
-            PlaywrightTimeoutError(
-                'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
+            BrowserTransientReadError(
+                "The page replaced its body before it could be read."
             )
             for _ in range(VikacgPlugin.BODY_READ_TIMEOUT_LIMIT)
         ]
@@ -680,8 +806,8 @@ async def test_vikacg_reports_repeated_body_timeouts_after_click(monkeypatch) ->
         [
             "积分与签到 今日未签 立即签到",
             *[
-                PlaywrightTimeoutError(
-                    'Locator.inner_text: Timeout 5000ms exceeded. waiting for locator("body")'
+                BrowserTransientReadError(
+                    "The page replaced its body before it could be read."
                 )
                 for _ in range(VikacgPlugin.BODY_READ_TIMEOUT_LIMIT)
             ],

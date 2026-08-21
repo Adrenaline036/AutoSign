@@ -131,6 +131,8 @@ AutoSign 将以下浏览器状态合并保存：
 
 Docker 中的 Chromium 运行在虚拟显示环境。交互登录期间 Chromium 作为普通 X11 进程启动，Playwright 不参与启动或输入；只有用户点击“登录完成，检测并保存”后，AutoSign 才通过容器回环 CDP 接管并导出状态。原始 VNC 与 CDP 均只监听容器回环地址；noVNC 静态资源与 WebSocket 转发要求有效的管理员会话。无需映射 `5900` 或调试端口，也不应将其暴露到公网。
 
+未启用 noVNC 且未配置原生 Chrome 窗口时，AutoSign 仍保留截图轮询式交互登录兼容模式。该模式及其 `screenshot`/`click`/`type`/`press` API 已弃用，但本轮不会直接删除；新部署应使用官方 Compose 的 noVNC 实时浏览器，桌面开发则使用原生 Chrome 窗口。DeferredChrome 会话不会接受截图模式输入 API，错误配置会在启动时明确失败，而不是在登录途中返回“未知会话”。真正移除兼容模式前会保留公开弃用窗口并再次审查。
+
 粘贴文本通过现有的管理员会话和 CSRF 校验后写入当前聚焦的远端输入框。备用输入框默认隐藏内容；文本发送后立即清空，不写入 AutoSign 数据库，成功提示也只显示字符数。
 
 ## 配置
@@ -145,8 +147,9 @@ Docker 中的 Chromium 运行在虚拟显示环境。交互登录期间 Chromium
 | `AUTOSIGN_DATABASE_BUSY_TIMEOUT_MS` | `2000` | SQLite 写锁冲突最大等待毫秒数；不是固定请求延迟 |
 | `AUTOSIGN_BROWSER_HEADLESS` | `true` | 是否使用无界面 Chromium；Docker 示例使用虚拟显示下的 headful 模式 |
 | `AUTOSIGN_BROWSER_HIDE_WINDOW` | `false` | 桌面开发时将原生 headful 窗口移出屏幕 |
-| `AUTOSIGN_BROWSER_LIVE_ENABLED` | `false` | 启用 noVNC 实时登录；Docker 示例已开启 |
+| `AUTOSIGN_BROWSER_LIVE_ENABLED` | `false` | 启用 noVNC 实时登录；Docker 示例已开启；关闭且无原生 Chrome 时使用已弃用的截图兼容模式 |
 | `AUTOSIGN_BROWSER_NATIVE_EXECUTABLE` | 无 | 普通浏览器延迟接管入口；官方 Docker 示例指向镜像内固定 Chromium 启动器 |
+| `AUTOSIGN_BROWSER_NATIVE_WINDOW` | `false` | 桌面环境直接显示原生 Chrome 窗口；必须同时配置 `AUTOSIGN_BROWSER_NATIVE_EXECUTABLE` |
 | `AUTOSIGN_BROWSER_SESSION_TIMEOUT_SECONDS` | `900` | 交互登录会话最大闲置秒数 |
 | `AUTOSIGN_BROWSER_SESSION_CLEANUP_POLL_SECONDS` | `60` | 后台清理过期交互会话的轮询秒数 |
 | `AUTOSIGN_BROWSER_AUTOMATION_CAPACITY` | `2` | 同时执行的浏览器自动化操作上限；NAS 内存压力较高时可降为 `1` |
@@ -219,6 +222,8 @@ docker exec -it autosign python -m autosign restore /data/backups/<backup>.asbac
 
 ## 升级
 
+支持的直接升级起点为首个公开源码版本 `0.13.1`；更早的内部开发版本不属于常规兼容范围。升级仍应保留原数据库、数据目录和 `AUTOSIGN_MASTER_KEY`。
+
 1. 创建并校验一次加密备份。
 2. 备份当前 `.env` 和整个数据目录。
 3. 拉取新代码或导入新镜像。
@@ -227,6 +232,24 @@ docker exec -it autosign python -m autosign restore /data/backups/<backup>.asbac
 6. 分别手动执行关键账户，再恢复自动计划。
 
 数据库迁移会在容器启动时自动执行。不要通过删除数据库或重新生成主密钥来解决升级问题。
+
+管理页的 Demo 测试统一使用“创建 Demo 账户 → 执行账户签到”，不再提供绕过账户记录、通知和生命周期门的 `/api/v1/plugins/{plugin_id}/execute` 直执行接口；API 调用者应改用 `POST /api/v1/accounts/{account_id}/execute`。交互登录现在始终从干净会话开始，旧 `clean` query 参数已弃用并被忽略；保存状态只会在自动签到时恢复。
+
+通知渠道迁移只在首次需要时扫描旧账户秘密，成功后记录完成状态，后续启动不再重复扫描。如果从早期内部版本升级后发现 Uptime Kuma 或 NapCat 渠道缺失，应先停止正式服务并校验备份，再执行一次显式修复：
+
+```powershell
+.\.venv\Scripts\python.exe -m autosign repair-legacy-notifications
+```
+
+Docker Compose 环境可在停止正式服务后使用同一数据卷和主密钥运行一次性命令：
+
+```bash
+docker compose stop autosign
+docker compose run --rm autosign python -m autosign repair-legacy-notifications
+docker compose up -d autosign
+```
+
+修复过程会复用已存在的相同渠道和账户分配；若中途失败，不会写入完成标记，下次启动或再次执行修复时会继续幂等处理。不要在正式容器仍写入数据库时并行运行修复命令。
 
 ## 本地开发
 
@@ -249,6 +272,10 @@ Copy-Item .env.example .env
 ## 新增插件
 
 新插件应实现 `autosign.plugin_sdk.AutoSignPlugin`，并放在 `src/autosign/plugins/` 或通过 `autosign.plugins` entry point 发布。
+
+当前只支持插件 SDK `api_version=1`；registry 会在发现阶段拒绝其他版本，避免未知契约进入执行路径。SDK v1 的 `PluginManifest` 字段以及 `PluginContext.settings`、`logger`、`browser`、`secrets` 保持兼容：`domains`、`settings_schema` 和 `capabilities` 作为插件/API 元数据保留，`secrets` 只提供当前账户作用域的秘密读取。
+
+`check_session()` 是已弃用的 v1 兼容钩子，生产执行不会单独调用它；默认返回 `UNKNOWN`，插件必须在 `sign()` 内完成实际登录态判断。`PluginContext.http` 从未由 AutoSign 注入，现已标记弃用并始终为 `None`；新插件应使用受限的 `browser` 能力或自行封装站点客户端。上述弃用成员只会在未来 SDK v2 中删除。
 
 插件应负责：
 

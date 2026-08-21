@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
-from sqlalchemy import select
+from sqlalchemy import delete, select
 
 from autosign.core.db import Account, AccountSecret, AppMetadata, Database
 from autosign.core.security import SecretCipher, SecretDecryptionError
@@ -92,6 +92,20 @@ class VaultService:
             if record is None:
                 raise LookupError(f"Unknown secret: {name}")
             session.delete(record)
+            session.commit()
+
+    def delete_many(self, account_id: str, names: set[str]) -> None:
+        """Delete a related set of account secrets in one transaction."""
+        if not names:
+            return
+        with self._database.session() as session:
+            self._require_account(session, account_id)
+            session.execute(
+                delete(AccountSecret).where(
+                    AccountSecret.account_id == account_id,
+                    AccountSecret.name.in_(names),
+                )
+            )
             session.commit()
 
     @staticmethod

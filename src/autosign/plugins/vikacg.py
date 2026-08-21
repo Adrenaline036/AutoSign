@@ -9,11 +9,10 @@ from typing import Any
 from autosign.plugin_sdk import (
     AutoSignPlugin,
     BrowserAutomation,
+    BrowserTransientReadError,
     PluginCapability,
     PluginContext,
     PluginManifest,
-    SessionResult,
-    SessionState,
     SignResult,
     SignStatus,
 )
@@ -86,12 +85,6 @@ class VikacgPlugin(AutoSignPlugin):
             PluginCapability.BROWSER_FALLBACK,
         },
     )
-
-    async def check_session(self, context: PluginContext) -> SessionResult:
-        return SessionResult(
-            state=SessionState.UNKNOWN,
-            message="VikACG 会话将在每日签到页面中检测。",
-        )
 
     async def sign(self, context: PluginContext) -> SignResult:
         browser = context.browser
@@ -202,17 +195,8 @@ class VikacgPlugin(AutoSignPlugin):
                 raise VikacgImportError("导入的 VikACG 登录状态已经失效。")
             raise VikacgImportError("VikACG 暂时无法刷新登录状态，请稍后重试。")
 
-        data = payload.get("data")
-        data = data if isinstance(data, dict) else {}
-        new_token = data.get("token")
-        new_refresh_token = data.get("refreshToken")
-        if not isinstance(new_token, str) or not new_token:
+        if not self._apply_refreshed_tokens(session, payload):
             raise VikacgImportError("VikACG 刷新登录状态时没有返回有效令牌。")
-        session.token = new_token
-        session.account["token"] = new_token
-        if isinstance(new_refresh_token, str) and new_refresh_token:
-            session.refresh_token = new_refresh_token
-            session.account["refreshToken"] = new_refresh_token
 
         try:
             await browser.goto(self.USER_INFO_API_URL)
@@ -272,20 +256,28 @@ class VikacgPlugin(AutoSignPlugin):
             raise VikacgImportError(f"{source}中的 accountStore3 格式无效。")
         return decoded
 
-    @staticmethod
-    def _select_current_account(cache: dict[str, Any], *, source: str) -> dict[str, Any]:
+    @classmethod
+    def _select_current_account(cls, cache: dict[str, Any], *, source: str) -> dict[str, Any]:
         accounts = cache.get("accounts")
         current_id = cache.get("currentID")
         if not isinstance(accounts, list) or current_id is None:
             raise VikacgImportError(f"{source}缺少 accounts 或 currentID。")
-        matches = [
+        matches = cls._matching_current_accounts(cache)
+        if len(matches) != 1:
+            raise VikacgImportError(f"{source}无法唯一确定当前 VikACG 账户。")
+        return matches[0]
+
+    @staticmethod
+    def _matching_current_accounts(cache: dict[str, Any]) -> list[dict[str, Any]]:
+        accounts = cache.get("accounts")
+        current_id = cache.get("currentID")
+        if not isinstance(accounts, list) or current_id is None:
+            return []
+        return [
             item
             for item in accounts
             if isinstance(item, dict) and str(item.get("id")) == str(current_id)
         ]
-        if len(matches) != 1:
-            raise VikacgImportError(f"{source}无法唯一确定当前 VikACG 账户。")
-        return matches[0]
 
     @classmethod
     def _account_store_records(cls, state: dict[str, Any]) -> list[dict[str, Any]]:
@@ -357,12 +349,7 @@ class VikacgPlugin(AutoSignPlugin):
                 stage="refresh_token",
             )
 
-        refresh_data = refresh_payload.get("data")
-        if not isinstance(refresh_data, dict):
-            refresh_data = {}
-        new_token = refresh_data.get("token")
-        new_refresh_token = refresh_data.get("refreshToken")
-        if not isinstance(new_token, str) or not new_token:
+        if not self._apply_refreshed_tokens(session, refresh_payload):
             return SignResult(
                 status=SignStatus.FAILED,
                 message="VikACG 刷新登录状态后没有返回新令牌。",
@@ -372,13 +359,6 @@ class VikacgPlugin(AutoSignPlugin):
                     "http_status": refresh_response.status,
                 },
             )
-
-        session.token = new_token
-        if isinstance(new_refresh_token, str) and new_refresh_token:
-            session.refresh_token = new_refresh_token
-        session.account["token"] = session.token
-        if session.refresh_token:
-            session.account["refreshToken"] = session.refresh_token
 
         # The API request context shares cookies but cannot modify IndexedDB.
         # Open the same-origin API route only long enough to update localForage;
@@ -428,6 +408,25 @@ class VikacgPlugin(AutoSignPlugin):
         )
 
     @staticmethod
+    def _apply_refreshed_tokens(
+        session: _VikacgApiSession,
+        payload: dict[str, Any],
+    ) -> bool:
+        data = payload.get("data")
+        data = data if isinstance(data, dict) else {}
+        new_token = data.get("token")
+        if not isinstance(new_token, str) or not new_token:
+            return False
+
+        session.token = new_token
+        session.account["token"] = new_token
+        new_refresh_token = data.get("refreshToken")
+        if isinstance(new_refresh_token, str) and new_refresh_token:
+            session.refresh_token = new_refresh_token
+            session.account["refreshToken"] = new_refresh_token
+        return True
+
+    @staticmethod
     async def _post_api(
         browser: BrowserAutomation,
         url: str,
@@ -459,20 +458,11 @@ class VikacgPlugin(AutoSignPlugin):
         if account_cache is None:
             return None
 
+        matches = self._matching_current_accounts(account_cache)
+        current = matches[0] if matches else None
         accounts = account_cache.get("accounts")
-        current_id = account_cache.get("currentID")
-        if not isinstance(accounts, list):
-            return None
-        current = next(
-            (
-                item
-                for item in accounts
-                if isinstance(item, dict) and str(item.get("id")) == str(current_id)
-            ),
-            None,
-        )
-        if current is None and len(accounts) == 1 and isinstance(accounts[0], dict):
-            current = accounts[0]
+        if current is None and isinstance(accounts, list) and len(accounts) == 1:
+            current = accounts[0] if isinstance(accounts[0], dict) else None
         if current is None:
             return None
         token = current.get("token")
@@ -800,12 +790,8 @@ class VikacgPlugin(AutoSignPlugin):
         """Ignore only transient Playwright timeouts while the SPA replaces ``body``."""
         try:
             return await browser.body_text()
-        except Exception as exc:
-            message = str(exc)
-            is_body_timeout = type(exc).__name__ == "TimeoutError" and 'locator("body")' in message
-            if is_body_timeout:
-                return None
-            raise
+        except BrowserTransientReadError:
+            return None
 
     @staticmethod
     def _login_required(text: str) -> bool:

@@ -14,14 +14,21 @@ from datetime import UTC, datetime, timedelta
 from pathlib import Path
 from uuid import uuid4
 
-from playwright.async_api import Browser, BrowserContext, Page, Playwright, async_playwright
+from playwright.async_api import (
+    Browser,
+    BrowserContext,
+    Page,
+    Playwright,
+    async_playwright,
+)
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 
 from autosign.core.capacity import (
     BrowserCapacityGate,
     BrowserCapacityLease,
     BrowserCapacitySnapshot,
 )
-from autosign.plugin_sdk import BrowserResponse
+from autosign.plugin_sdk import BrowserResponse, BrowserTransientReadError
 
 BROWSER_STATE_SECRET = "browser_storage_state"
 SESSION_STORAGE_STATE_KEY = "_autosign_session_storage"
@@ -214,7 +221,12 @@ class PlaywrightAutomationClient:
         return " ".join(text.split()) if text else None
 
     async def body_text(self) -> str:
-        text = await self.page.locator("body").inner_text(timeout=5_000)
+        try:
+            text = await self.page.locator("body").inner_text(timeout=5_000)
+        except PlaywrightTimeoutError as exc:
+            raise BrowserTransientReadError(
+                "The page replaced its body before the text could be read."
+            ) from exc
         return " ".join(text.split())
 
     async def html_content(self) -> str:
@@ -403,6 +415,8 @@ class BrowserSessionInfo:
 
 
 class BrowserSessionManager:
+    supports_screenshot_interaction = True
+
     def __init__(
         self,
         timeout_seconds: int = 900,
@@ -739,8 +753,14 @@ class BrowserSessionManager:
         running. Without this capture, the next schedule restores only the
         original interactive-login state and can be logged out unexpectedly.
         """
-        page = browser.page
-        context = page.context
+        return await self._capture_validated_state(browser.page.context, browser.page)
+
+    async def _capture_validated_state(
+        self,
+        context: BrowserContext,
+        page: Page,
+    ) -> str:
+        """Capture one complete state payload and prove Playwright can restore it."""
         falsey_keys = await self._collect_falsey_indexeddb_keys(context)
         session_storage = await self._collect_session_storage(context, page)
         state = await context.storage_state(indexed_db=True)
@@ -806,21 +826,14 @@ class BrowserSessionManager:
         async with session.operation_lock:
             try:
                 if save_state:
-                    falsey_keys = await self._collect_falsey_indexeddb_keys(session.context)
-                    session_storage = await self._collect_session_storage(
-                        session.context, session.page
-                    )
                     # Some modern applications keep their authentication token in
                     # IndexedDB instead of cookies or localStorage.  Preserve it as
                     # part of the same encrypted browser state so a later automation
                     # context can restore the complete login session.
-                    state = await session.context.storage_state(indexed_db=True)
-                    self._apply_falsey_indexeddb_keys(state, falsey_keys)
-                    state, _ = normalize_storage_state(state)
-                    if session_storage:
-                        state[SESSION_STORAGE_STATE_KEY] = session_storage
-                    await self._validate_storage_state(state)
-                    state_json = json.dumps(state, ensure_ascii=False, separators=(",", ":"))
+                    state_json = await self._capture_validated_state(
+                        session.context,
+                        session.page,
+                    )
             except Exception as exc:
                 if self._is_target_closed_error(exc):
                     raise BrowserSessionNotFoundError(
@@ -1073,6 +1086,8 @@ class DeferredChromeSession:
 class DeferredChromeBrowserSessionManager(BrowserSessionManager):
     """Launch ordinary Chrome first and attach Playwright only after user login."""
 
+    supports_screenshot_interaction = False
+
     def __init__(
         self,
         *,
@@ -1301,18 +1316,9 @@ class DeferredChromeBrowserSessionManager(BrowserSessionManager):
                     await self._attach_after_login(session)
                     assert session.context is not None
                     assert session.page is not None
-                    falsey_keys = await self._collect_falsey_indexeddb_keys(session.context)
-                    session_storage = await self._collect_session_storage(
-                        session.context, session.page
-                    )
-                    state = await session.context.storage_state(indexed_db=True)
-                    self._apply_falsey_indexeddb_keys(state, falsey_keys)
-                    state, _ = normalize_storage_state(state)
-                    if session_storage:
-                        state[SESSION_STORAGE_STATE_KEY] = session_storage
-                    await self._validate_storage_state(state)
-                    state_json = json.dumps(
-                        state, ensure_ascii=False, separators=(",", ":")
+                    state_json = await self._capture_validated_state(
+                        session.context,
+                        session.page,
                     )
             finally:
                 await self._shutdown_native(session)

@@ -2,13 +2,9 @@ from __future__ import annotations
 
 import asyncio
 import json
-from dataclasses import dataclass
 from typing import Protocol
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 from urllib.request import urlopen
-
-from autosign.core.services.vault import VaultService
-from autosign.plugin_sdk import SignResult, SignStatus
 
 UPTIME_KUMA_PUSH_URL_SECRET = "uptime_kuma_push_url"
 
@@ -24,13 +20,6 @@ class HttpResponse(Protocol):
 
     def __exit__(self, *_args) -> None:
         ...
-
-
-@dataclass(frozen=True, slots=True)
-class MonitorDelivery:
-    configured: bool
-    success: bool
-    message: str
 
 
 class UptimeKumaPushClient:
@@ -105,78 +94,3 @@ class UptimeKumaPushClient:
                 return
             if isinstance(payload, dict) and payload.get("ok") is False:
                 raise RuntimeError(str(payload.get("msg") or "Uptime Kuma rejected the push."))
-
-
-class MonitoringService:
-    def __init__(
-        self,
-        vault: VaultService,
-        client: UptimeKumaPushClient | None = None,
-    ) -> None:
-        self._vault = vault
-        self._client = client or UptimeKumaPushClient()
-
-    def configured(self, account_id: str) -> bool:
-        return UPTIME_KUMA_PUSH_URL_SECRET in self._vault.list_names(account_id)
-
-    def set_push_url(self, account_id: str, push_url: str) -> None:
-        validated = self._client.validate_url(push_url)
-        self._vault.set(account_id, UPTIME_KUMA_PUSH_URL_SECRET, validated)
-
-    def delete_push_url(self, account_id: str) -> None:
-        if self.configured(account_id):
-            self._vault.delete(account_id, UPTIME_KUMA_PUSH_URL_SECRET)
-
-    async def test(self, account_id: str) -> MonitorDelivery:
-        return await self._deliver(
-            account_id,
-            status="up",
-            message="AutoSign 监控连接测试成功",
-            ping_ms=0,
-        )
-
-    async def send_result(self, account_id: str, result: SignResult) -> MonitorDelivery:
-        is_up = result.status in {SignStatus.SUCCESS, SignStatus.ALREADY_SIGNED}
-        status = "up" if is_up else "down"
-        message = f"{result.status.value}: {result.message}"
-        return await self._deliver(
-            account_id,
-            status=status,
-            message=message,
-            ping_ms=result.duration_ms,
-        )
-
-    async def _deliver(
-        self,
-        account_id: str,
-        *,
-        status: str,
-        message: str,
-        ping_ms: int | None,
-    ) -> MonitorDelivery:
-        try:
-            push_url = self._vault.get(account_id, UPTIME_KUMA_PUSH_URL_SECRET)
-        except LookupError:
-            return MonitorDelivery(
-                configured=False,
-                success=False,
-                message="该账户尚未配置 Uptime Kuma Push URL。",
-            )
-        try:
-            await self._client.push(
-                push_url,
-                status=status,
-                message=message,
-                ping_ms=ping_ms,
-            )
-        except Exception as exc:
-            return MonitorDelivery(
-                configured=True,
-                success=False,
-                message=f"推送失败：{exc}",
-            )
-        return MonitorDelivery(
-            configured=True,
-            success=True,
-            message="Uptime Kuma 已接受推送。",
-        )

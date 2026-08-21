@@ -12,7 +12,10 @@ import uvicorn
 from autosign import __version__
 from autosign.core.backup import BackupError, create_backup, inspect_backup, stage_restore
 from autosign.core.config import get_settings
+from autosign.core.db import Database
 from autosign.core.security import SecretCipher
+from autosign.core.services.notifications import NotificationChannelService
+from autosign.core.services.vault import VaultService
 
 
 def initialize_master_key(env_path: Path = Path(".env")) -> int:
@@ -40,6 +43,10 @@ def _parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="python -m autosign")
     subcommands = parser.add_subparsers(dest="command")
     subcommands.add_parser("init-key", help="Create AUTOSIGN_MASTER_KEY in .env.")
+    subcommands.add_parser(
+        "repair-legacy-notifications",
+        help="Force a one-time repair of pre-channel notification secrets.",
+    )
     for command, help_text in (
         ("backup", "Create an encrypted database and master-key backup."),
         ("backup-check", "Decrypt and validate an AutoSign backup."),
@@ -81,6 +88,24 @@ def _run_command(arguments: argparse.Namespace) -> int:
         return initialize_master_key()
     settings = get_settings()
     settings.prepare_directories()
+    if arguments.command == "repair-legacy-notifications":
+        database = Database(
+            settings.database_url,
+            sqlite_busy_timeout_ms=settings.database_busy_timeout_ms,
+        )
+        try:
+            database.migrate()
+            cipher = SecretCipher(settings.require_master_key())
+            vault = VaultService(database, cipher)
+            vault.initialize_key_check()
+            migrated = NotificationChannelService(database, cipher).migrate_legacy(
+                vault,
+                force=True,
+            )
+        finally:
+            database.dispose()
+        print(f"Legacy notification repair completed: migrated={migrated}")
+        return 0
     password = _backup_password(arguments.password_file, confirm=arguments.command == "backup")
     if arguments.command == "backup":
         output_dir = arguments.output_dir or settings.data_dir / "backups"

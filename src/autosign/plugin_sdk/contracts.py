@@ -6,9 +6,11 @@ from collections.abc import Mapping
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import StrEnum
-from typing import Any, Protocol
+from typing import Any, Protocol, Self
 
-from pydantic import BaseModel, ConfigDict, Field
+from pydantic import BaseModel, ConfigDict, Field, model_validator
+
+PLUGIN_API_VERSION = 1
 
 
 class PluginCapability(StrEnum):
@@ -32,13 +34,17 @@ class SignStatus(StrEnum):
     INTERACTION_REQUIRED = "interaction_required"
 
 
+class BrowserTransientReadError(RuntimeError):
+    """A browser-owned document node changed before its text could be read."""
+
+
 class PluginManifest(BaseModel):
     model_config = ConfigDict(frozen=True)
 
     id: str = Field(pattern=r"^[a-z][a-z0-9_-]*$")
     name: str
     version: str
-    api_version: int = 1
+    api_version: int = PLUGIN_API_VERSION
     description: str = ""
     domains: list[str] = Field(default_factory=list)
     login_url: str | None = None
@@ -62,6 +68,25 @@ class SignResult(BaseModel):
     account_id: str | None = None
     executed_at: datetime | None = None
     duration_ms: int | None = None
+
+    @model_validator(mode="after")
+    def require_verified_status_consistency(self) -> SignResult:
+        expected = self.status in {SignStatus.SUCCESS, SignStatus.ALREADY_SIGNED}
+        if self.verified is not expected:
+            raise ValueError(
+                "verified must be true only for success or already-signed results"
+            )
+        return self
+
+    def model_copy(
+        self,
+        *,
+        update: Mapping[str, Any] | None = None,
+        deep: bool = False,
+    ) -> Self:
+        """Copy this result without allowing updates to bypass its invariants."""
+        candidate = super().model_copy(update=update, deep=deep)
+        return type(self).model_validate(candidate.model_dump(round_trip=True))
 
 
 @dataclass(frozen=True, slots=True)
@@ -96,6 +121,7 @@ class BrowserAutomation(Protocol):
         ...
 
     async def body_text(self) -> str:
+        """Return normalized body text or raise ``BrowserTransientReadError``."""
         ...
 
     async def html_content(self) -> str:
@@ -147,7 +173,10 @@ class PluginContext:
     account_label: str
     settings: Mapping[str, Any] = field(default_factory=dict)
     logger: logging.Logger = field(default_factory=lambda: logging.getLogger("autosign.plugin"))
-    http: Any | None = None
+    http: Any | None = field(
+        default=None,
+        metadata={"deprecated": "Reserved in SDK v1; it was never injected by AutoSign."},
+    )
     browser: BrowserAutomation | None = None
     secrets: SecretAccessor = field(default_factory=EmptySecretAccessor, repr=False)
 
@@ -155,9 +184,12 @@ class PluginContext:
 class AutoSignPlugin(ABC):
     manifest: PluginManifest
 
-    @abstractmethod
     async def check_session(self, context: PluginContext) -> SessionResult:
-        """Return whether the stored site session can be used."""
+        """Deprecated SDK v1 hook; execution validates sessions inside ``sign()``."""
+        return SessionResult(
+            state=SessionState.UNKNOWN,
+            message="The session is validated when the plugin executes.",
+        )
 
     @abstractmethod
     async def sign(self, context: PluginContext) -> SignResult:

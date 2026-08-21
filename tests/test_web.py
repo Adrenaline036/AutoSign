@@ -9,12 +9,15 @@ from pydantic import SecretStr
 
 from autosign import __version__
 from autosign.core import backup
+from autosign.core.account_operations import AccountOperationRejectedError
 from autosign.core.browser_sessions import (
     BROWSER_STATE_SECRET,
+    BrowserStorageStateError,
     DeferredChromeBrowserSessionManager,
 )
 from autosign.core.config import Settings
 from autosign.core.security import SecretCipher
+from autosign.core.services.notifications import NotificationDelivery
 from autosign.plugins.vikacg import VikacgImportError, VikacgImportResult, VikacgPlugin
 from autosign.web.app import create_app
 
@@ -94,13 +97,19 @@ def settings_for_test(data_dir: Path, key: str | None = None) -> Settings:
 def test_health_and_plugin_execution(tmp_path: Path) -> None:
     with TestClient(create_app(settings_for_test(tmp_path))) as client:
         dashboard = client.get("/")
+        accounts_script = client.get("/assets/accounts.js")
+        history_script = client.get("/assets/history.js")
+        browser_script = client.get("/assets/browser.js")
+        notifications_script = client.get("/assets/notifications.js")
+        vikacg_recovery_script = client.get("/assets/vikacg-recovery.js")
         health = client.get("/healthz")
         plugins = client.get("/api/v1/plugins")
         system_status = client.get("/api/v1/system/status")
-        execution = client.post(
-            "/api/v1/plugins/demo/execute",
-            json={"account_id": "a1", "account_label": "Test", "settings": {"reward": 5}},
-        )
+        account = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "Test", "settings": {"reward": 5}},
+        ).json()
+        execution = client.post(f"/api/v1/accounts/{account['id']}/execute")
 
     assert dashboard.status_code == 200
     assert '<dialog id="secret-dialog"' not in dashboard.text
@@ -109,8 +118,44 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert '<dialog id="vikacg-recovery-dialog"' in dashboard.text
     assert 'id="vikacg-import-value" class="secret-json-input" maxlength="65536"' in dashboard.text
     assert 'type="password" autocomplete="off"' in dashboard.text
-    assert 'isVikacg ? "登录与恢复" : "交互登录"' in dashboard.text
-    assert "/vikacg-state-import" in dashboard.text
+    assert '<script src="/assets/accounts.js"></script>' in dashboard.text
+    assert '<script src="/assets/history.js"></script>' in dashboard.text
+    assert '<script src="/assets/browser.js"></script>' in dashboard.text
+    assert '<script src="/assets/notifications.js"></script>' in dashboard.text
+    assert '<script src="/assets/vikacg-recovery.js"></script>' in dashboard.text
+    assert "window.createAccountsUi" in accounts_script.text
+    assert "window.createHistoryUi" in history_script.text
+    assert "window.createBrowserUi" in browser_script.text
+    assert "window.createNotificationsUi" in notifications_script.text
+    assert 'api("/api/v1/executions?limit=6")' in history_script.text
+    assert "loadExecutions: historyUi.load" in dashboard.text
+    assert "historyUi.render()" in dashboard.text
+    assert "openVikacgRecovery(account)" in accounts_script.text
+    assert "openVikacgRecovery: vikacgRecovery.open" in dashboard.text
+    assert accounts_script.status_code == 200
+    assert accounts_script.headers["cache-control"] == "no-store"
+    assert history_script.status_code == 200
+    assert history_script.headers["cache-control"] == "no-store"
+    assert browser_script.status_code == 200
+    assert browser_script.headers["cache-control"] == "no-store"
+    assert notifications_script.status_code == 200
+    assert notifications_script.headers["cache-control"] == "no-store"
+    assert "openChannelAssignment: notificationsUi.openAssignment" in dashboard.text
+    assert "notificationsUi.render()" in dashboard.text
+    assert notifications_script.text.count(
+        '{type: "uptime_kuma", title: "Uptime Kuma"}'
+    ) == 2
+    assert notifications_script.text.count('{type: "napcat", title: "NapCat QQ"}') == 2
+    assert "/notification-channels/${channel.id}/test`" in notifications_script.text
+    assert "/notification-channels`," in notifications_script.text
+    assert "return {openAssignment, render};" in notifications_script.text
+    assert "renderNotificationChannels" not in dashboard.text
+    assert dashboard.text.count("openBrowserLogin: browserUi.open") == 2
+    assert vikacg_recovery_script.status_code == 200
+    assert vikacg_recovery_script.headers["cache-control"] == "no-store"
+    assert "window.createVikacgRecovery" in vikacg_recovery_script.text
+    assert "/vikacg-state-import" in vikacg_recovery_script.text
+    assert "confirm_overwrite: importConfirmed" in vikacg_recovery_script.text
     assert '<dialog id="execution-detail-dialog"' in dashboard.text
     assert '<dialog id="force-browser-save-dialog"' in dashboard.text
     assert '<dialog id="schedule-dialog"' in dashboard.text
@@ -119,11 +164,19 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert 'class="browser-dialog"' in dashboard.text
     assert 'id="channel-assignment-list" class="channel-assignment-columns"' in dashboard.text
     assert '.channel-assignment-columns { display: grid;' in dashboard.text
-    assert 'element("section", "channel-assignment-column")' in dashboard.text
+    assert 'element("section", "channel-assignment-column")' in notifications_script.text
     assert '<dialog id="delete-channel-dialog"' in dashboard.text
     assert 'id="channel-create"' in dashboard.text
-    assert 'id="demo-test"' in dashboard.text
-    assert 'id="history-clear"' in dashboard.text
+    assert 'id="demo-test"' not in dashboard.text
+    assert 'id="history-clear"' not in dashboard.text
+    assert "seenExecutionIds" not in dashboard.text
+    assert "historyMode" not in dashboard.text
+    assert "loadNewExecutions" not in dashboard.text
+    assert 'loginBadge(account.secret_names.includes("browser_storage_state"))' in (
+        accounts_script.text
+    )
+    assert 'statusBadge("Uptime Kuma", account.monitor_configured)' in accounts_script.text
+    assert 'statusBadge("QQ通知", account.napcat_configured)' in accounts_script.text
     assert 'id="notification-channels"' in dashboard.text
     assert 'id="backup-summary"' in dashboard.text
     assert 'id="backup-run"' in dashboard.text
@@ -152,10 +205,11 @@ def test_health_and_plugin_execution(tmp_path: Path) -> None:
     assert 'id="browser-live-panel"' in dashboard.text
     assert 'id="browser-live-open"' in dashboard.text
     assert 'id="browser-native-help"' in dashboard.text
-    assert "普通 Chrome 登录窗口已打开（尚未接管）" in dashboard.text
+    assert "普通 Chrome 登录窗口已打开（尚未接管）" in browser_script.text
     assert "AutoSign 此时尚未连接浏览器" in dashboard.text
-    assert "/focus`" in dashboard.text
-    assert "activeBrowserSession.live_url" in dashboard.text
+    assert "/focus`" in browser_script.text
+    assert "activeSession.live_url" in browser_script.text
+    assert "forceSaveDialog.showModal()" in browser_script.text
     assert 'id="browser-keyboard-capture"' not in dashboard.text
     assert "无法连接 AutoSign 服务" in dashboard.text
     assert 'id="execution-history"' in dashboard.text
@@ -206,6 +260,8 @@ def test_local_preview_remote_browser_is_a_separate_interactive_page() -> None:
     ).read_text(encoding="utf-8")
 
     assert "AutoSign 独立登录浏览器" in remote_browser
+    assert 'id="compatibility-warning"' in remote_browser
+    assert "截图轮询登录是已弃用的兼容模式" in remote_browser
     assert 'id="screen"' in remote_browser
     assert 'id="keyboard" type="text"' in remote_browser
     assert 'id="paste-input" type="password"' in remote_browser
@@ -232,6 +288,7 @@ def test_native_executable_selects_deferred_chrome_manager(tmp_path: Path) -> No
         app.state.browser_sessions,
         DeferredChromeBrowserSessionManager,
     )
+    assert app.state.browser_supports_screenshot_interaction is False
 
 
 def test_docker_nas_uses_deferred_chromium_for_interactive_login() -> None:
@@ -390,14 +447,81 @@ def test_backup_status_and_manual_actions(tmp_path: Path, monkeypatch) -> None:
     assert updated.json()["retention_count"] == 9
     assert created.status_code == 200
     assert created.json()["status"]["latest_backup_name"].startswith("autosign-auto-")
+    backup_name = created.json()["status"]["latest_backup_name"]
+    assert created.json()["message"] == f"Encrypted backup created: {backup_name}"
+    assert (tmp_path / "backups" / backup_name).is_file()
     assert checked.status_code == 200
     assert checked.json()["success"] is True
+    assert checked.json()["message"] == f"Backup is valid: {backup_name}"
 
 
-def test_unknown_plugin_returns_404(tmp_path: Path) -> None:
+def test_backup_routes_preserve_failure_mapping(tmp_path: Path) -> None:
+    with TestClient(create_app(settings_for_test(tmp_path))) as client:
+        status = client.get("/api/v1/backups/status")
+        run = client.post("/api/v1/backups/run", json={})
+        check = client.post("/api/v1/backups/check-latest", json={})
+        invalid_format = client.put(
+            "/api/v1/backups/settings",
+            json={
+                "enabled": False,
+                "daily_time": "25:00",
+                "timezone": "UTC",
+                "retention_count": 7,
+            },
+        )
+        invalid_timezone = client.put(
+            "/api/v1/backups/settings",
+            json={
+                "enabled": False,
+                "daily_time": "03:30",
+                "timezone": "Invalid/Timezone",
+                "retention_count": 7,
+            },
+        )
+        enable_without_password = client.put(
+            "/api/v1/backups/settings",
+            json={
+                "enabled": True,
+                "daily_time": "03:30",
+                "timezone": "UTC",
+                "retention_count": 7,
+            },
+        )
+
+    assert status.status_code == 200
+    assert status.json()["configured"] is False
+    assert run.status_code == 409
+    assert run.json()["detail"] == "Automatic backup password is not configured."
+    assert check.status_code == 409
+    assert check.json()["detail"] == "Automatic backup password is not configured."
+    assert invalid_format.status_code == 422
+    assert invalid_timezone.status_code == 400
+    assert invalid_timezone.json()["detail"] == (
+        "Unknown backup timezone: Invalid/Timezone"
+    )
+    assert enable_without_password.status_code == 400
+    assert enable_without_password.json()["detail"] == (
+        "Set a backup password before enabling automatic backup."
+    )
+    assert not (tmp_path / "backups").exists()
+
+
+def test_backup_check_latest_reports_missing_backup(tmp_path: Path) -> None:
+    settings = settings_for_test(tmp_path)
+    settings.backup_password = SecretStr("automatic backup password")
+
+    with TestClient(create_app(settings)) as client:
+        response = client.post("/api/v1/backups/check-latest", json={})
+
+    assert response.status_code == 409
+    assert response.json()["detail"] == "No automatic backup is available yet."
+    assert not (tmp_path / "backups").exists()
+
+
+def test_direct_plugin_execution_endpoint_is_removed(tmp_path: Path) -> None:
     with TestClient(create_app(settings_for_test(tmp_path))) as client:
         response = client.post(
-            "/api/v1/plugins/missing/execute",
+            "/api/v1/plugins/demo/execute",
             json={"account_id": "a1", "account_label": "Test"},
         )
 
@@ -453,6 +577,101 @@ def test_account_crud(tmp_path: Path) -> None:
         assert deleted.status_code == 204
         assert client.get("/api/v1/accounts").json() == []
         assert client.get("/api/v1/executions").json() == []
+
+
+def test_account_routes_preserve_failure_mapping(tmp_path: Path) -> None:
+    app = create_app(settings_for_test(tmp_path))
+    with TestClient(app) as client:
+        invalid_plugin = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "unknown", "label": "Invalid"},
+        )
+        assert invalid_plugin.status_code == 400
+        assert client.get("/api/v1/accounts").json() == []
+
+        assert client.get("/api/v1/accounts/unknown").status_code == 404
+        assert client.patch(
+            "/api/v1/accounts/unknown",
+            json={"enabled": False},
+        ).status_code == 404
+        assert client.get("/api/v1/accounts/unknown/secrets").status_code == 404
+        assert client.post("/api/v1/accounts/unknown/execute").status_code == 404
+        assert client.delete("/api/v1/accounts/unknown/schedule").status_code == 404
+
+        account = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "Failure Demo"},
+        ).json()
+        account_id = account["id"]
+
+        invalid_secret_name = client.put(
+            f"/api/v1/accounts/{account_id}/secrets/{'x' * 101}",
+            json={"value": "test-only-secret"},
+        )
+        assert invalid_secret_name.status_code == 400
+        missing_secret = client.delete(
+            f"/api/v1/accounts/{account_id}/secrets/missing",
+        )
+        assert missing_secret.status_code == 400
+
+        invalid_timezone = client.put(
+            f"/api/v1/accounts/{account_id}/schedule",
+            json={"daily_time": "08:30", "timezone": "Invalid/Timezone"},
+        )
+        assert invalid_timezone.status_code == 400
+        assert client.get("/api/v1/schedules").json() == []
+
+        app.state.executions.execute = AsyncMock(
+            side_effect=BrowserStorageStateError("invalid stored browser state")
+        )
+        failed_execution = client.post(f"/api/v1/accounts/{account_id}/execute")
+        assert failed_execution.status_code == 409
+        assert failed_execution.json()["detail"] == "invalid stored browser state"
+
+        @asynccontextmanager
+        async def reject_delete(_account_id: str):
+            raise AccountOperationRejectedError("account is busy")
+            yield
+
+        app.state.account_operations.delete = reject_delete
+        rejected_delete = client.post(
+            f"/api/v1/accounts/{account_id}/delete",
+            json={"confirm_label": "Failure Demo"},
+        )
+        assert rejected_delete.status_code == 409
+        assert rejected_delete.json()["detail"] == "account is busy"
+        assert client.get(f"/api/v1/accounts/{account_id}").status_code == 200
+
+
+def test_execution_history_filters_and_validates_limit(tmp_path: Path) -> None:
+    with TestClient(create_app(settings_for_test(tmp_path))) as client:
+        first_id = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "First Demo"},
+        ).json()["id"]
+        second_id = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "Second Demo"},
+        ).json()["id"]
+
+        assert client.post(f"/api/v1/accounts/{first_id}/execute").status_code == 200
+        assert client.post(f"/api/v1/accounts/{first_id}/execute").status_code == 200
+        assert client.post(f"/api/v1/accounts/{second_id}/execute").status_code == 200
+
+        first_page = client.get(
+            "/api/v1/executions",
+            params={"account_id": first_id, "limit": 1},
+        )
+        assert first_page.status_code == 200
+        assert len(first_page.json()) == 1
+        assert first_page.json()[0]["account_id"] == first_id
+        assert first_page.json()[0]["started_at"].endswith(("Z", "+00:00"))
+
+        full_page = client.get("/api/v1/executions", params={"limit": 200})
+        assert full_page.status_code == 200
+        assert len(full_page.json()) == 3
+        assert client.get("/api/v1/executions", params={"limit": 0}).status_code == 422
+        assert client.get("/api/v1/executions", params={"limit": 201}).status_code == 422
 
 
 def test_account_schedule_crud(tmp_path: Path) -> None:
@@ -538,8 +757,53 @@ def test_uptime_channel_is_validated_encrypted_and_assignable(tmp_path: Path) ->
         assert renamed.status_code == 200
         assert renamed.json()["name"] == "Renamed Kuma"
 
+        changed_type = client.put(
+            f"/api/v1/notification-channels/{channel_id}",
+            json={
+                "name": "Wrong Type",
+                "channel_type": "napcat",
+                "base_url": "http://napcat.example:3000",
+                "access_token": "test-only-token",
+                "target_type": "group",
+                "target_id": "123456",
+            },
+        )
+        assert changed_type.status_code == 400
+
+        app.state.notifications.test = AsyncMock(
+            side_effect=[
+                NotificationDelivery(
+                    channel_id=channel_id,
+                    channel_name="Renamed Kuma",
+                    channel_type="uptime_kuma",
+                    success=False,
+                    message="temporary delivery failure",
+                ),
+                NotificationDelivery(
+                    channel_id=channel_id,
+                    channel_name="Renamed Kuma",
+                    channel_type="uptime_kuma",
+                    success=True,
+                    message="Uptime Kuma 已接受推送。",
+                ),
+            ]
+        )
+        failed_test = client.post(f"/api/v1/notification-channels/{channel_id}/test")
+        assert failed_test.status_code == 502
+        assert failed_test.json()["detail"] == "temporary delivery failure"
+        successful_test = client.post(
+            f"/api/v1/notification-channels/{channel_id}/test"
+        )
+        assert successful_test.status_code == 200
+        assert successful_test.json()["success"] is True
+
         assert client.delete(f"/api/v1/notification-channels/{channel_id}").status_code == 204
         assert client.get(f"/api/v1/accounts/{account_id}").json()["monitor_configured"] is False
+        assert client.delete("/api/v1/notification-channels/unknown").status_code == 404
+        assert client.put(
+            "/api/v1/accounts/unknown/notification-channels",
+            json={"channel_ids": []},
+        ).status_code == 404
 
 
 def test_napcat_channel_is_encrypted_reusable_and_unassignable(tmp_path: Path) -> None:

@@ -6,11 +6,10 @@ from urllib.parse import quote
 from autosign.plugin_sdk import (
     AutoSignPlugin,
     BrowserAutomation,
+    BrowserTransientReadError,
     PluginCapability,
     PluginContext,
     PluginManifest,
-    SessionResult,
-    SessionState,
     SignResult,
     SignStatus,
 )
@@ -57,12 +56,6 @@ class YamiboPlugin(AutoSignPlugin):
             PluginCapability.BROWSER_SIGN,
         },
     )
-
-    async def check_session(self, context: PluginContext) -> SessionResult:
-        return SessionResult(
-            state=SessionState.UNKNOWN,
-            message="百合会会话将在浏览器中检测。",
-        )
 
     async def sign(self, context: PluginContext) -> SignResult:
         browser = context.browser
@@ -235,14 +228,7 @@ class YamiboPlugin(AutoSignPlugin):
         for attempt in range(cls.BODY_READ_ATTEMPTS):
             try:
                 return await browser.body_text(), body_read_timeouts
-            except Exception as exc:
-                message = str(exc)
-                is_body_timeout = (
-                    type(exc).__name__ == "TimeoutError"
-                    and 'locator("body")' in message
-                )
-                if not is_body_timeout:
-                    raise
+            except BrowserTransientReadError:
                 body_read_timeouts += 1
                 if attempt + 1 < cls.BODY_READ_ATTEMPTS:
                     await asyncio.sleep(cls.BODY_READ_RETRY_SECONDS)

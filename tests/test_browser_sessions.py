@@ -5,9 +5,11 @@ import base64
 import json
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from unittest.mock import AsyncMock
 
 import pytest
 from fastapi.testclient import TestClient
+from playwright.async_api import TimeoutError as PlaywrightTimeoutError
 from pydantic import SecretStr
 
 import autosign.core.browser_sessions as browser_sessions_module
@@ -31,6 +33,7 @@ from autosign.core.browser_sessions import (
 )
 from autosign.core.config import Settings
 from autosign.core.security import SecretCipher
+from autosign.plugin_sdk import BrowserTransientReadError
 from autosign.web.app import create_app
 
 
@@ -58,6 +61,7 @@ class FakeLocator:
     def __init__(self) -> None:
         self.clicked = False
         self.click_error: Exception | None = None
+        self.inner_text_error: Exception | None = None
         self.dom_clicked = False
 
     @property
@@ -81,6 +85,11 @@ class FakeLocator:
     async def evaluate(self, _script: str) -> bool:
         self.dom_clicked = True
         return True
+
+    async def inner_text(self, **_kwargs) -> str:
+        if self.inner_text_error is not None:
+            raise self.inner_text_error
+        return "  page   body  "
 
 
 class FakePage:
@@ -252,6 +261,22 @@ async def test_automation_client_uses_dom_click_after_actionability_timeout() ->
     assert await client.click('text="立即签到"') is True
     assert page.fake_locator.clicked is False
     assert page.fake_locator.dom_clicked is True
+
+
+@pytest.mark.asyncio
+async def test_automation_client_translates_only_playwright_body_timeouts() -> None:
+    page = FakePage()
+    page.fake_locator.inner_text_error = PlaywrightTimeoutError("body changed")
+    client = PlaywrightAutomationClient(page)
+
+    with pytest.raises(BrowserTransientReadError) as exc_info:
+        await client.body_text()
+
+    assert isinstance(exc_info.value.__cause__, PlaywrightTimeoutError)
+
+    page.fake_locator.inner_text_error = RuntimeError("unrelated read failure")
+    with pytest.raises(RuntimeError, match="unrelated read failure"):
+        await client.body_text()
 
 
 @pytest.mark.asyncio
@@ -1152,18 +1177,22 @@ async def test_explicit_browser_activity_refreshes_idle_deadline() -> None:
 
 @pytest.mark.asyncio
 async def test_browser_cleanup_coordinator_runs_and_stops() -> None:
+    second_call = asyncio.Event()
+
     class CleanupManager:
         def __init__(self) -> None:
             self.calls = 0
 
         async def cleanup_expired(self) -> int:
             self.calls += 1
+            if self.calls >= 2:
+                second_call.set()
             return 1 if self.calls == 1 else 0
 
     manager = CleanupManager()
     coordinator = BrowserSessionCleanupCoordinator(manager, poll_seconds=0.01)  # type: ignore[arg-type]
     coordinator.start()
-    await asyncio.sleep(0.025)
+    await asyncio.wait_for(second_call.wait(), timeout=1)
     await coordinator.stop()
 
     assert manager.calls >= 2
@@ -1219,6 +1248,8 @@ async def test_closed_browser_target_is_discarded_with_reopen_message() -> None:
 
 
 class FakeApiBrowserManager:
+    supports_screenshot_interaction = True
+
     def __init__(self) -> None:
         now = datetime.now(UTC)
         self.info = BrowserSessionInfo(
@@ -1235,6 +1266,7 @@ class FakeApiBrowserManager:
         self.started_login_urls: list[str] = []
         self.activity_calls = 0
         self.focus_calls = 0
+        self.screenshot_compatibility_calls: list[str] = []
 
     async def start(
         self,
@@ -1266,6 +1298,7 @@ class FakeApiBrowserManager:
         return 0
 
     async def screenshot(self, _session_id: str) -> bytes:
+        self.screenshot_compatibility_calls.append("screenshot")
         return b"fake-png"
 
     async def mark_activity(self, _session_id: str) -> None:
@@ -1280,13 +1313,13 @@ class FakeApiBrowserManager:
         )
 
     async def click(self, _session_id: str, **_kwargs) -> None:
-        pass
+        self.screenshot_compatibility_calls.append("click")
 
     async def type_text(self, _session_id: str, **_kwargs) -> None:
-        pass
+        self.screenshot_compatibility_calls.append("type")
 
     async def press_key(self, _session_id: str, **_kwargs) -> None:
-        pass
+        self.screenshot_compatibility_calls.append("press")
 
     async def login_is_complete(self, _session_id: str, **_kwargs) -> bool:
         return self.login_complete
@@ -1348,30 +1381,44 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         stored = client.app.state.vault.get(account["id"], BROWSER_STATE_SECRET)
         assert '"value":"state"' in stored
 
-        restored = client.post(f"/api/v1/accounts/{account['id']}/browser-session")
-        assert restored.status_code == 200
-        assert browser_manager.started_storage_states[-1] == stored
+        clean_default = client.post(f"/api/v1/accounts/{account['id']}/browser-session")
+        assert clean_default.status_code == 200
+        assert browser_manager.started_storage_states[-1] is None
         client.post(
-            f"/api/v1/browser-sessions/{restored.json()['id']}/close",
+            f"/api/v1/browser-sessions/{clean_default.json()['id']}/close",
             json={"save_state": False},
         )
 
-        clean = client.post(
-            f"/api/v1/accounts/{account['id']}/browser-session?clean=true"
+        deprecated_false = client.post(
+            f"/api/v1/accounts/{account['id']}/browser-session?clean=false"
         )
-        assert clean.status_code == 200
+        assert deprecated_false.status_code == 200
         assert browser_manager.started_storage_states[-1] is None
         client.post(
-            f"/api/v1/browser-sessions/{clean.json()['id']}/close",
+            f"/api/v1/browser-sessions/{deprecated_false.json()['id']}/close",
             json={"save_state": False},
         )
+
+        browser_parameters = client.get("/openapi.json").json()["paths"][
+            "/api/v1/accounts/{account_id}/browser-session"
+        ]["post"]["parameters"]
+        clean_parameter = next(item for item in browser_parameters if item["name"] == "clean")
+        assert clean_parameter["deprecated"] is True
+        openapi_paths = client.get("/openapi.json").json()["paths"]
+        for path, method in (
+            ("/api/v1/browser-sessions/{session_id}/screenshot", "get"),
+            ("/api/v1/browser-sessions/{session_id}/click", "post"),
+            ("/api/v1/browser-sessions/{session_id}/type", "post"),
+            ("/api/v1/browser-sessions/{session_id}/press", "post"),
+        ):
+            assert openapi_paths[path][method]["deprecated"] is True
 
         vikacg_account = client.post(
             "/api/v1/accounts",
             json={"plugin_id": "vikacg", "label": "VikACG 登录入口测试"},
         ).json()
         vikacg_session = client.post(
-            f"/api/v1/accounts/{vikacg_account['id']}/browser-session?clean=true"
+            f"/api/v1/accounts/{vikacg_account['id']}/browser-session"
         )
         assert vikacg_session.status_code == 200
         assert browser_manager.started_login_urls[-1] == (
@@ -1403,6 +1450,119 @@ def test_browser_api_saves_state_in_account_vault(tmp_path: Path) -> None:
         assert forced.json()["saved"] is True
         assert forced.json()["verified"] is False
         assert BROWSER_STATE_SECRET in forced.json()["secret_names"]
+
+
+def test_browser_router_preserves_safe_error_mapping(tmp_path: Path) -> None:
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(SecretCipher.generate_key()),
+        auth_disabled=True,
+    )
+    browser_manager = FakeApiBrowserManager()
+    app = create_app(settings, browser_manager_override=browser_manager)
+
+    with TestClient(app) as client:
+        unknown_account = client.post("/api/v1/accounts/unknown/browser-session")
+        assert unknown_account.status_code == 404
+
+        account_id = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "浏览器错误映射"},
+        ).json()["id"]
+        original_start = browser_manager.start
+        browser_manager.start = AsyncMock(
+            side_effect=RuntimeError("internal browser detail must stay hidden")
+        )
+        failed_start = client.post(
+            f"/api/v1/accounts/{account_id}/browser-session"
+        )
+        assert failed_start.status_code == 502
+        assert failed_start.json()["detail"] == (
+            "Browser operation failed safely: RuntimeError"
+        )
+
+        browser_manager.start = original_start
+        session_id = client.post(
+            f"/api/v1/accounts/{account_id}/browser-session"
+        ).json()["id"]
+        browser_manager.close = AsyncMock(
+            side_effect=BrowserStorageStateError("capture failed")
+        )
+        failed_close = client.post(
+            f"/api/v1/browser-sessions/{session_id}/close",
+            json={"save_state": True},
+        )
+        assert failed_close.status_code == 409
+        assert failed_close.json()["detail"] == "capture failed"
+
+
+def test_deferred_transport_rejects_screenshot_compatibility_api(tmp_path: Path) -> None:
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(SecretCipher.generate_key()),
+        auth_disabled=True,
+        browser_native_window=True,
+    )
+    browser_manager = FakeApiBrowserManager()
+    browser_manager.supports_screenshot_interaction = False
+    app = create_app(settings, browser_manager_override=browser_manager)
+
+    with TestClient(app) as client:
+        account = client.post(
+            "/api/v1/accounts",
+            json={"plugin_id": "demo", "label": "Deferred 能力边界"},
+        ).json()
+        started = client.post(f"/api/v1/accounts/{account['id']}/browser-session")
+        assert started.status_code == 200
+        assert started.json()["live_url"] is None
+        session_id = started.json()["id"]
+
+        requests = (
+            ("GET", "screenshot", None),
+            ("POST", "click", {"x": 10, "y": 10}),
+            ("POST", "type", {"text": "ignored"}),
+            ("POST", "press", {"key": "Enter"}),
+        )
+        for method, action, body in requests:
+            response = client.request(
+                method,
+                f"/api/v1/browser-sessions/{session_id}/{action}",
+                json=body,
+            )
+            assert response.status_code == 409
+            assert "unavailable" in response.json()["detail"]
+        live_page = client.get(f"/browser-sessions/{session_id}/live")
+        assert live_page.status_code == 409
+        assert browser_manager.screenshot_compatibility_calls == []
+
+
+def test_deferred_transport_requires_an_interactive_surface(tmp_path: Path) -> None:
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(SecretCipher.generate_key()),
+        auth_disabled=True,
+        browser_native_executable=tmp_path / "chrome.exe",
+    )
+
+    with pytest.raises(RuntimeError, match="Deferred Chrome interactive login requires"):
+        create_app(settings)
+    assert not (tmp_path / "browser-login-profiles").exists()
+
+
+def test_native_window_requires_a_configured_executable(tmp_path: Path) -> None:
+    settings = Settings(
+        environment="testing",
+        data_dir=tmp_path,
+        master_key=SecretStr(SecretCipher.generate_key()),
+        auth_disabled=True,
+        browser_native_window=True,
+    )
+
+    with pytest.raises(RuntimeError, match="NATIVE_EXECUTABLE"):
+        create_app(settings)
 
 
 def test_native_browser_session_uses_visible_system_window_contract(tmp_path: Path) -> None:
