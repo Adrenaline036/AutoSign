@@ -1,6 +1,6 @@
 services:
   autosign:
-    image: autosign-local:0.16.0
+    image: autosign:0.18.0
     pull_policy: never
     container_name: autosign
     restart: unless-stopped
